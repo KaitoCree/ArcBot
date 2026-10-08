@@ -1,0 +1,107 @@
+{
+  "_notes": "Reference players for scoring and OCR tests: numbers transcribed from Player Stats screens. Screenshots stay local (gitignored); only numbers are kept here.",
+  "rating_tolerance": 0.15,
+  "players": [
+    {
+      "id": "player_a_pc_screenshot",
+      "screenshot_file": "player_a_combat_tab.webp",
+      "screenshot_kind": "clean PC capture, dark UI, Combat tab showing (list fields absent)",
+      "hours_hms": "268:02:47",
+      "knockouts": 350,
+      "squadmate_revives": 219,
+      "stranger_revives": 43,
+      "quests": 26,
+      "containers": 14099,
+      "expeditions": 1,
+      "expected_rating": 86.34,
+      "expected_assessed_rank": "vanguard",
+      "expected_flagged_for_mods": true,
+      "missing_fields": [
+        "containers",
+        "expeditions"
+      ]
+    },
+    {
+      "id": "player_b_tv_photo",
+      "screenshot_file": "player_b_tv_photo.jpg",
+      "screenshot_kind": "phone photo of a TV (angled, blue cast, console). Hardest OCR case",
+      "hours_hms": "131:18:27",
+      "knockouts": 31,
+      "squadmate_revives": 44,
+      "stranger_revives": 10,
+      "quests": 31,
+      "containers": 6381,
+      "expeditions": 1,
+      "expected_rating": 50.23,
+      "expected_assessed_rank": "pathfinder",
+      "expected_flagged_for_mods": false
+    },
+    {
+      "id": "player_c_pc_screenshot",
+      "screenshot_file": "player_c_pc.png",
+      "screenshot_kind": "clean PC capture, dark UI, Progression & Economy tab",
+      "hours_hms": "523:02:41",
+      "knockouts": 15,
+      "squadmate_revives": 16,
+      "stranger_revives": 94,
+      "quests": 9,
+      "containers": 28351,
+      "expeditions": 4,
+      "expected_rating": 83.45,
+      "expected_assessed_rank": "vanguard",
+      "expected_flagged_for_mods": true
+    },
+    {
+      "id": "player_d_pc_screenshot",
+      "screenshot_file": "player_d_pc.webp",
+      "screenshot_kind": "clean PC capture, dark UI, Progression & Economy tab",
+      "hours_hms": "280:52:08",
+      "knockouts": 356,
+      "squadmate_revives": 226,
+      "stranger_revives": 45,
+      "quests": 13,
+      "containers": 14715,
+      "expeditions": 2,
+      "expected_rating": 87.9,
+      "expected_assessed_rank": "vanguard",
+      "expected_flagged_for_mods": true
+    }
+  ],
+  "rank_engine_cases": [
+    {
+      "desc": "seed from stats then earn activity: no repeat rank-up",
+      "start_points": 0,
+      "assessed": "pathfinder",
+      "expect_points_after_seed": 50,
+      "then_add": 1,
+      "expect_rank": "pathfinder",
+      "expect_rank_up_events": 0
+    },
+    {
+      "desc": "points never lower on a weaker resubmission",
+      "start_points": 80,
+      "assessed": "scavenger",
+      "expect_points_after_seed": 80
+    },
+    {
+      "desc": "grind reaches vanguard at 150",
+      "start_points": 149,
+      "then_add": 1,
+      "expect_rank": "vanguard",
+      "expect_rank_up_events": 1
+    },
+    {
+      "desc": "veteran never from points",
+      "start_points": 5000,
+      "expect_rank": "vanguard"
+    },
+    {
+      "desc": "veteran stats approval seeds to 150 and grants veteran",
+      "start_points": 0,
+      "assessed": "veteran",
+      "mod_approved": true,
+      "expect_points_after_seed": 150,
+      "expect_rank": "veteran"
+    }
+  ]
+}

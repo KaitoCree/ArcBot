@@ -1,0 +1,171 @@
+# arcbot tuning: single source of truth. Loaded and validated at startup (invalid values stop the bot
+# with a readable error). Member-facing wording lives in copy.yaml.
+
+guild:
+  name: "The Raider's Outpost"
+
+roles:
+  unplaced: "Newcomer"            # created manually; sees #apply only (see docs/DISCORD_SETUP.md)
+  ranks:                          # ordered low -> high
+    - {key: green_horn, role: "Green Horn", threshold: 0}
+    - {key: scavenger,  role: "Scavenger",  threshold: 15}
+    - {key: pathfinder, role: "Pathfinder", threshold: 50}
+    - {key: vanguard,   role: "Vanguard",   threshold: 150}
+    # Veteran is NEVER earned from points. Granted only via stats assessment + mod approval,
+    # or a Guild Master's /set-rank. seed_threshold is the points floor a Veteran is seeded to.
+    - {key: veteran,    role: "Veteran",    threshold: null, seed_threshold: 150}
+  mods: ["Guild Master"]          # any of these that exist count as mod roles (add "Mod" here if you create one)
+  guild_master: "Guild Master"    # only this role may grant Veteran / use /set-rank
+
+channels:
+  apply: "apply"
+  rank_promotion: "rank-promotion"
+  mod_review: "mod-review"        # private, mods only
+  vouch: "vouch"
+  job_board: "job-board"
+  event_timers: "event-timers"
+  rank_up_announcements: "general-chat"   # #hall-of-fame stays reserved for in-game content
+
+onboarding:
+  skip_rank: green_horn           # what the Skip button grants
+  announce_placements: true
+  announce_rank_ups: true         # never includes point values
+  join_ping_minutes: 10           # new members get a self-deleting @mention in #apply (0 = off)
+
+review:
+  flag_assessed_rank_above: pathfinder    # vanguard / veteran results go to #mod-review
+  provisional_rank_while_pending: pathfinder   # = the highest rank that auto-places anyway, so no extra privilege
+  reminder_after_hours: 48
+  deny_resets_cooldown: true
+
+promotion:
+  cooldown_days: 30               # per user, counted from their last stats submission
+  no_change_cooldown_days: 7      # shorter wait when the last result changed nothing (submitted too early)
+  upward_only: true               # a lower result never lowers rank or points
+
+# ---- One-time server setup (python -m arcbot.setup_server) --------------------------------------
+setup:
+  new_channel_category: null       # category name for channels the tool creates; null = top of the list
+  newcomer_visible: ["rules", "welcome"]   # existing channels Newcomers may read (no sending); emoji prefixes are ignored
+  mod_only: ["Mod"]                # categories/channels lockdown makes Guild Master-only (staff logs etc.)
+  give_unranked_newcomer: true     # lockdown stage gives Newcomer to members with no rank role, so nobody is locked out
+
+# ---- Stats -> 0-100 Guild Rating ------------------------------------------------------------
+# rating = sum over metrics of: max_points * curve(min(value / cap, 1))
+# curve "linear" = x ; "sqrt" = sqrt(x). revives = squadmate + stranger combined.
+# A `blend` metric scores several stats together: best_share * (strongest one) + rest * (average of all),
+# so medics (revives), fighters (knockouts) and solo looters (containers) with the same hours land close.
+# Reference players (tests/fixtures/expected_stats.json): 268h -> 86.3 vanguard, 131h -> 50.2 pathfinder.
+# See docs/SCORING.md.
+stats_rating:
+  metrics:
+    hours:       {max_points: 40, cap: 300, curve: linear}   # experience; playstyle-neutral
+    playstyle:
+      max_points: 53
+      curve: sqrt
+      best_share: 0.5
+      blend:
+        revives:    {cap: 600}
+        knockouts:  {cap: 800}
+        containers: {cap: 15000}
+    quests:      {max_points: 5, cap: 40, curve: linear}     # counter resets with each expedition, so kept small
+    expeditions: {max_points: 2, cap: 2,  curve: sqrt}       # a reward, not a requirement: 1 -> +1.4, 2+ -> +2
+  bands:                          # minimum rating for each assessed rank
+    green_horn: 0
+    scavenger: 20
+    pathfinder: 40
+    vanguard: 60
+    veteran: 90
+
+# Soft plausibility flags: any hit forces mod review regardless of assessed rank.
+plausibility:
+  max_hours: 3000
+  max_knockouts_per_hour: 12
+  max_containers_per_hour: 120
+  max_revives_per_hour: 10
+  max_quests: 110                 # the game has 100 quests; the counter resets on expeditions
+  zero_combat_after_hours: 50     # 0 knockouts AND 0 revives after this many hours -> mod look (known Overview-strip bug)
+  max_expeditions: 8
+  tiny_hours_but_big_numbers: {hours_below: 5, containers_above: 2000}
+  name_mismatch_is_flag: true     # only when the in-game name is readable in the screenshot
+
+# ---- Activity points (hidden from players; mods only) ---------------------------------------
+points:
+  vouch: 1
+  vouch_rules:
+    min_words: 4                  # excluding mentions
+    max_recipients_per_message: 3
+    pair_cooldown_hours: 24       # same voucher -> same recipient counts once per window
+    max_counted_vouches_per_voucher_per_day: 5
+    max_counted_vouches_per_recipient_per_day: 3   # a member can be vouched a few times a day by different people
+    near_miss_hint: true          # short "@name ty" messages get a self-deleting format hint (once a day per person)
+    voucher_must_be_placed: true  # Newcomers cannot vouch
+    voucher_min_days_in_guild: 3  # brand-new accounts' vouches don't count yet (same reaction, rules stay hidden)
+    always_react_when_well_formed: true   # same reaction whether counted or not (do not leak the rules)
+  mod_award: {min: 1, max: 25}    # /award; reason required; logged
+
+  # The job dropdown is phrased as "who should be able to complete this".
+  job_tiers:
+    # `who` is the player-facing phrase used in "This one's for {who}."
+    anyone:          {label: "Anyone",        who: "everyone",           min_rank: green_horn, points: 2,  mod_preview_before_posting: false}
+    scavenger_plus:  {label: "Scavenger+",    who: "Scavengers and up",  min_rank: scavenger,  points: 5,  mod_preview_before_posting: false}
+    pathfinder_plus: {label: "Pathfinder+",   who: "Pathfinders and up", min_rank: pathfinder, points: 10, mod_preview_before_posting: false}
+    vanguard_plus:   {label: "Vanguard+",     who: "Vanguards and up",   min_rank: vanguard,   points: 15, mod_preview_before_posting: false}
+    veterans_only:   {label: "Veterans only", who: "Veterans only",      min_rank: veteran,    points: 20, mod_preview_before_posting: true}
+
+  job_rules:
+    helper_min_days_in_guild: 3
+    pair_cap_per_30_days: 3          # (poster, helper) completions that earn points; extras complete silently at 0
+    helper_daily_job_point_cap: 40
+    open_job_expires_days: 7
+    accepted_job_expires_days: 14     # accepted but nobody pressed "Mark complete"
+    checkin_after_days: [3, 10]       # "did this get done?" nudges in the job thread
+    confirm_wait_days: 7              # one side said done, other silent -> goes to mods instead of expiring
+    max_open_jobs_per_poster: 3
+    max_posts_per_poster_per_day: 3
+    create_thread_per_job: true
+
+job_listing_checks:
+  flag_list_file: "config/flag_list.json"
+  flag_any_url: true
+  min_description_chars: 20
+  max_description_chars: 1000
+  duplicate_window_minutes: 10
+
+# ---- Optional integrations --------------------------------------------------------------------
+timers:
+  enabled: true
+  # MetaForge public API (https://metaforge.app/arc-raiders/api). Failures are logged and skipped.
+  poll_minutes: 1
+  region: "north-america"         # sent as ?region=...; retried without it if the API rejects it
+  attribution_text: "Data: MetaForge"   # footer also links metaforge.app/arc-raiders (their terms)
+  adopt_message_id: null          # set a message id to keep updating an existing timer post
+
+# ---- Operations -------------------------------------------------------------------------------
+ocr:
+  max_image_mb: 8
+  max_side_px: 3000
+  concurrency: 2                  # screenshots read at the same time
+  min_field_confidence: 0.80
+
+backups:
+  enabled: true
+  local_dir: "data/backups"
+  time_local: "03:30"
+  keep_daily: 14
+  git_push: false                 # optional: push to a PRIVATE repo via deploy key
+
+keepalive:                        # see docs/DEPLOY.md. Insurance against idle reclamation.
+  enabled: true
+  # A1 shape: memory > 20% alone keeps the instance non-idle and costs no CPU.
+  memory_hold_enabled: true
+  memory_hold_percent: 26               # whole-box target incl. arcbot's own use
+  memory_ceiling_percent: 40            # never push the box above this
+  oracle_threshold_percent: 20          # Oracle: idle if CPU p95, network AND (A1) memory all < 20% for 7 days
+  # CPU fallback, off unless memory turns out not to be enough
+  cpu_burst_enabled: false
+  safety_margin_percent: 15
+  target_fraction_of_minutes_above: 0.12
+  burst_minutes_per_hour: {start: 8, min: 4, max: 20}
+  self_tune: true
+  log_weekly_report: true

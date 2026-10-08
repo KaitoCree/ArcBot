@@ -1,0 +1,25 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/
+!data/.gitkeep
+.pytest_cache/
+# real member screenshots stay local (other players' names); tests skip when absent
+tests/fixtures/screens/*
+!tests/fixtures/screens/README.md
+
+# secrets and keys (defensive: none should ever be in this folder)
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+id_rsa*
+# member data: database files, mod exports, backups anywhere
+*.db
+*.db-wal
+*.db-shm
+*.db.gz
+*.csv
+setup-rollback-*.json

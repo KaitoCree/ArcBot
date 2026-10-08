@@ -1,0 +1,148 @@
+{
+  "_notes": [
+    "Use with simple case-insensitive substring/word-boundary matching, not exact-match only.",
+    "A hit should FLAG the listing for mod review, not auto-reject it — false positives will happen.",
+    "For general profanity/slurs, don't hand-roll a list: use an existing, maintained open-source",
+    "profanity filter library (e.g. a package like 'profanity-filter' / 'bad-words' for your bot's",
+    "language, or a maintained list like LDNOOBW) instead of the categories below. Those libraries",
+    "are kept current and cover slurs/obscenity properly; this file only covers ARC Raiders-specific",
+    "ToS and marketplace risk language, which no generic library will catch.",
+    "Review and expand this list periodically — community slang for RMT/boosting evolves quickly",
+    "and often uses deliberate misspellings to dodge filters (e.g. 'p ay pal', 'c4shapp').",
+    "Each category has an \"action\": \"hold\" = a mod must approve before the job posts;",
+    "\"notify\" = the job posts right away and #mod-review gets a heads-up with a Take down button.",
+    "Move a term between categories to change how strictly it is handled."
+  ],
+  "real_money_trading": {
+    "action": "hold",
+    "description": "Signals someone is offering/requesting items, currency, or accounts for real money — banned per ARC Raiders' EULA/ToS.",
+    "terms": [
+      "paypal",
+      "venmo",
+      "cashapp",
+      "cash app",
+      "zelle",
+      "apple pay",
+      "google pay",
+      "irl cash",
+      "irl money",
+      "real money",
+      "real cash",
+      "$ per",
+      "how much irl",
+      "selling for $",
+      "buying for $",
+      "wtt for cash",
+      "gift card",
+      "giftcard",
+      "crypto",
+      "bitcoin",
+      "venmo me",
+      "cashapp me",
+      "dm for price",
+      "dm me a price",
+      "make an offer $",
+      "irl trade",
+      "f&f",
+      "friends and family",
+      "paypal f&f"
+    ]
+  },
+  "account_trading_and_sharing": {
+    "action": "hold",
+    "description": "Selling, buying, or sharing ARC Raiders accounts/credentials — explicitly banned per Embark's support FAQ.",
+    "terms": [
+      "account for sale",
+      "selling account",
+      "selling my account",
+      "acc for sale",
+      "selling acc",
+      "buying account",
+      "account swap",
+      "smurf for sale",
+      "account share",
+      "sharing my account",
+      "login and play",
+      "give you my login",
+      "embark id for sale",
+      "account transfer"
+    ]
+  },
+  "boosting_and_carrying": {
+    "action": "hold",
+    "description": "Paid or guaranteed-outcome carry/boost services — the exact ambiguity your job board is designed to avoid; flags it for a human to confirm it's framed as co-op play, not a paid carry.",
+    "terms": [
+      "boosting service",
+      "boost service",
+      "power leveling",
+      "power-leveling",
+      "carry service",
+      "paid carry",
+      "guaranteed win",
+      "guaranteed extract",
+      "guaranteed loot",
+      "rank buy",
+      "buy rank",
+      "buy trials rank",
+      "i'll carry you for",
+      "carrying for $",
+      "trials boost",
+      "trials carry",
+      "no risk carry",
+      "100% guaranteed"
+    ]
+  },
+  "cheating_and_exploits": {
+    "action": "hold",
+    "description": "References to cheats, hacks, or exploits — a job board post mentioning these is a serious red flag regardless of context.",
+    "terms": [
+      "aimbot",
+      "wallhack",
+      "wall hack",
+      "mod menu",
+      "cheat client",
+      "cracked client",
+      "undetected cheat",
+      "no ban risk",
+      "exploit glitch",
+      "dupe glitch",
+      "duplication glitch",
+      "cheat engine",
+      "hacked client",
+      "unlock all",
+      "unlock everything"
+    ]
+  },
+  "scams": {
+    "action": "hold",
+    "description": "Phishing / fake giveaway bait. Always held.",
+    "terms": [
+      "free nitro"
+    ]
+  },
+  "trade_talk": {
+    "action": "notify",
+    "description": "Ordinary trading words that are usually about in-game items, not real money. Posted, but mods get a heads-up in case it turns out to be RMT.",
+    "terms": [
+      "wts",
+      "wtb",
+      "price check",
+      "how much for",
+      "usd",
+      "eur",
+      "gbp",
+      "per item"
+    ]
+  },
+  "low_effort_or_spam_signals": {
+    "action": "notify",
+    "description": "Not banned language, just quality/legitimacy signals — pair with a length/emoji-ratio check rather than a pure word match.",
+    "terms": [
+      "click here",
+      "join my discord",
+      "check bio",
+      "dm me now",
+      "limited time offer"
+    ]
+  }
+}
