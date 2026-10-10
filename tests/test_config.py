@@ -31,11 +31,13 @@ def test_scoring_weights_validated(cfg):
     assert "add up to 100" in str(exc.value) and "blend" in str(exc.value)
 
 
-def test_veteran_threshold_must_be_null(cfg):
+def test_veteran_needs_threshold_or_seed_threshold(cfg):
     raw = stdcopy.deepcopy(cfg.raw)
-    raw["roles"]["ranks"][-1]["threshold"] = 300
-    with pytest.raises(ConfigError, match="never earned"):
+    raw["roles"]["ranks"][-1]["threshold"] = None
+    with pytest.raises(ConfigError, match="seed_threshold"):
         Config(raw, root=cfg.root)
+    raw["roles"]["ranks"][-1]["seed_threshold"] = 450  # grant-only Veteran still works
+    Config(raw, root=cfg.root)
 
 
 def test_migrations_apply_and_are_idempotent(tmp_path):

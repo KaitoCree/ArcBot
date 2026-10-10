@@ -39,7 +39,7 @@ class RankTable:
         return self.threshold(key)
 
     def rank_from_points(self, points: int) -> str:
-        """Highest earnable rank whose threshold <= points. Never returns veteran."""
+        """Highest earnable rank whose threshold <= points (Veteran only when it has a threshold)."""
         best = self.cfg.ranks[0].key
         for r in self.cfg.ranks:
             if r.threshold is None:

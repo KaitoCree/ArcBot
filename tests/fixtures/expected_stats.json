@@ -68,40 +68,11 @@
     }
   ],
   "rank_engine_cases": [
-    {
-      "desc": "seed from stats then earn activity: no repeat rank-up",
-      "start_points": 0,
-      "assessed": "pathfinder",
-      "expect_points_after_seed": 50,
-      "then_add": 1,
-      "expect_rank": "pathfinder",
-      "expect_rank_up_events": 0
-    },
-    {
-      "desc": "points never lower on a weaker resubmission",
-      "start_points": 80,
-      "assessed": "scavenger",
-      "expect_points_after_seed": 80
-    },
-    {
-      "desc": "grind reaches vanguard at 150",
-      "start_points": 149,
-      "then_add": 1,
-      "expect_rank": "vanguard",
-      "expect_rank_up_events": 1
-    },
-    {
-      "desc": "veteran never from points",
-      "start_points": 5000,
-      "expect_rank": "vanguard"
-    },
-    {
-      "desc": "veteran stats approval seeds to 150 and grants veteran",
-      "start_points": 0,
-      "assessed": "veteran",
-      "mod_approved": true,
-      "expect_points_after_seed": 150,
-      "expect_rank": "veteran"
-    }
+    {"desc": "seed from stats then earn activity: no repeat rank-up", "start_points": 0, "assessed": "pathfinder", "expect_points_after_seed": 50, "then_add": 1, "expect_rank": "pathfinder", "expect_rank_up_events": 0},
+    {"desc": "earned points stay on top of a stats seed, even a lower one", "start_points": 80, "assessed": "scavenger", "expect_points_after_seed": 95},
+    {"desc": "grind reaches vanguard at 150", "start_points": 149, "then_add": 1, "expect_rank": "vanguard", "expect_rank_up_events": 1},
+    {"desc": "grind reaches veteran at 450", "start_points": 449, "then_add": 1, "expect_rank": "veteran", "expect_rank_up_events": 1},
+    {"desc": "veteran earned from points", "start_points": 5000, "expect_rank": "veteran"},
+    {"desc": "veteran stats approval seeds to 450 and grants veteran", "start_points": 0, "assessed": "veteran", "mod_approved": true, "expect_points_after_seed": 450, "expect_rank": "veteran"}
   ]
 }
