@@ -73,10 +73,8 @@ class Config:
             errors.append("roles.ranks must end with the 'veteran' rank")
         else:
             vet = self.ranks[-1]
-            if vet.threshold is not None:
-                errors.append("veteran threshold must be null (Veteran is never earned from points)")
-            if vet.seed_threshold is None:
-                errors.append("veteran needs seed_threshold")
+            if vet.threshold is None and vet.seed_threshold is None:
+                errors.append("veteran needs a threshold (earnable) or a seed_threshold (grant-only)")
         earnable = self.ranks[:-1]
         if not earnable or earnable[0].threshold != 0:
             errors.append("the lowest rank must have threshold 0")

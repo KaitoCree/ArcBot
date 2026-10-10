@@ -132,7 +132,7 @@ def test_veteran_claim_approved_by_mod(intake, engine):
     assert r.evaluation.assessed == "veteran" and r.status == "pending"
     d = intake.decide(r.submission_id, "approve", mod_id=99)
     u = engine.get_user(13)
-    assert d.final_rank == "veteran" and u["points"] == 150 and u["veteran_granted"] == 1
+    assert d.final_rank == "veteran" and u["points"] == 450 and u["veteran_granted"] == 1
 
 
 def test_pending_blocks_and_reminders(intake, conn):

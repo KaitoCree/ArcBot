@@ -18,8 +18,11 @@ itself: restarts on crash, nightly backups, self-checks on startup.
 
 **Ranks and hidden points**
 - One cumulative points total per member, never shown to members. Ranks only ever go up.
-- Ranks: Green Horn, Scavenger, Pathfinder, Vanguard (earnable), Veteran (stats + mod approval only).
-- Stats placement seeds points to the rank's floor, so later activity builds on it without repeat rank-ups.
+- Ranks: Green Horn 0, Scavenger 15, Pathfinder 50, Vanguard 150, Veteran 450 hidden points. All are earnable;
+  Veteran can also come from a stats assessment with mod approval or a Guild Master's `/set-rank`.
+- Stats placement sets a baseline at the rank's floor and points earned from jobs, vouches, challenges and awards
+  stay on top of it: a promotion screenshot raises the baseline without resetting anything, and a weaker
+  result changes nothing. Earned points past a threshold carry the rank up as usual.
 - Rank-ups are announced without numbers.
 
 **Promotion (`#rank-promotion`)**

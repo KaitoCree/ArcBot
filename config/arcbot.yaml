@@ -11,9 +11,10 @@ roles:
     - {key: scavenger,  role: "Scavenger",  threshold: 15}
     - {key: pathfinder, role: "Pathfinder", threshold: 50}
     - {key: vanguard,   role: "Vanguard",   threshold: 150}
-    # Veteran is NEVER earned from points. Granted only via stats assessment + mod approval,
-    # or a Guild Master's /set-rank. seed_threshold is the points floor a Veteran is seeded to.
-    - {key: veteran,    role: "Veteran",    threshold: null, seed_threshold: 150}
+    # Veteran is earned at 450 points (the Vanguard -> Veteran gap is 3x the Pathfinder -> Vanguard one), or
+    # granted by a stats assessment with mod approval, or a Guild Master's /set-rank. Set threshold to null to
+    # make it grant-only again (it then needs seed_threshold).
+    - {key: veteran,    role: "Veteran",    threshold: 450}
   mods: ["Guild Master"]          # any of these that exist count as mod roles (add "Mod" here if you create one)
   guild_master: "Guild Master"    # only this role may grant Veteran / use /set-rank
 

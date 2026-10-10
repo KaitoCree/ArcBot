@@ -77,6 +77,11 @@ class ArcBot(commands.Bot):
 
         for line in setup_report(app, self):
             (log.warning if line.startswith(("❌", "⚠️")) else log.info)("setup: %s", line)
+        for change in app.engine.backfill_additive_seeds():  # one-time; promotes anyone it lifts over a threshold
+            log.info("points backfill: %s %s -> %s", change.discord_id, change.old, change.new)
+            member = await app.member(change.discord_id)
+            if member is not None:
+                await app.apply_change(change, member)
         removed = self.intake_flow.cleanup_orphan_uploads()
         if removed:
             log.info("deleted %d orphan uploads", removed)

@@ -12,7 +12,9 @@ def test_rank_from_points(cfg):
     assert rt.rank_from_points(15) == "scavenger"
     assert rt.rank_from_points(50) == "pathfinder"
     assert rt.rank_from_points(150) == "vanguard"
-    assert rt.rank_from_points(10**9) == "vanguard"  # never veteran
+    assert rt.rank_from_points(449) == "vanguard"
+    assert rt.rank_from_points(450) == "veteran"
+    assert rt.rank_from_points(10**9) == "veteran"
 
 
 def test_engine_cases(engine, expected):
@@ -21,7 +23,7 @@ def test_engine_cases(engine, expected):
         engine.ensure_user(uid)
         start = case["start_points"]
         if start:
-            engine.conn.execute("UPDATE users SET points = ? WHERE discord_id = ?", (start, uid))
+            engine.add_points(uid, start, "job")  # earned before placement
         # every case starts as a placed user at the rank their points imply
         engine.place(uid, engine.ranks.rank_from_points(start), seed=False)
         ups = []
@@ -57,18 +59,62 @@ def test_seeding_is_idempotent(engine):
     assert seeds == 1
 
 
-def test_veteran_unreachable_by_points(engine):
-    engine.place(3, "green_horn")
-    for _ in range(50):
-        engine.add_points(3, 100, "mod_award")
-    assert engine.get_user(3)["rank_key"] == "vanguard"
+def test_veteran_earned_from_points(engine):
+    engine.place(3, "vanguard")  # stats baseline 150
+    ch = engine.add_points(3, 299, "job")
+    assert ch is None and engine.get_user(3)["rank_key"] == "vanguard"
+    ch = engine.add_points(3, 1, "job")
+    assert ch.new == "veteran" and engine.get_user(3)["veteran_granted"] == 0
 
 
 def test_veteran_placement_requires_grant(engine):
     with pytest.raises(ValueError):
         engine.place(4, "veteran")
     ch = engine.place(4, "veteran", grant_veteran=True)
-    assert ch.new == "veteran" and engine.get_user(4)["points"] == 150
+    assert ch.new == "veteran" and engine.get_user(4)["points"] == 450
+
+
+def test_stats_screenshots_add_on_top_of_earned_points(engine):
+    engine.place(20, "green_horn")             # Skip
+    engine.add_points(20, 30, "job")           # 30 earned
+    engine.place(20, "pathfinder")             # first screenshot: 50 + 30
+    assert engine.get_user(20)["points"] == 80
+    engine.add_points(20, 12, "vouch")         # 42 earned
+    ch = engine.place(20, "vanguard")          # promotion screenshot: 150 + 42, nothing reset
+    assert ch.new == "vanguard" and engine.get_user(20)["points"] == 192
+    engine.place(20, "pathfinder")             # a weaker result changes nothing
+    assert engine.get_user(20)["points"] == 192
+
+
+def test_earned_points_over_the_next_threshold_carry_a_rank_up(engine):
+    engine.place(21, "green_horn")
+    engine.add_points(21, 120, "job")          # earned their way to pathfinder
+    assert engine.get_user(21)["rank_key"] == "pathfinder"
+    engine.place(21, "pathfinder")             # screenshot says pathfinder: 50 + 120 = 170 -> vanguard
+    u = engine.get_user(21)
+    assert u["points"] == 170 and u["rank_key"] == "vanguard"
+
+
+def test_backfill_credits_points_old_seeds_absorbed(engine, conn):
+    from arcbot.db import iso, utcnow
+
+    engine.place(30, "green_horn")
+    engine.add_points(30, 40, "job")
+    # what the old top-up seed wrote for a pathfinder screenshot: only the 10 needed to reach 50
+    conn.execute("INSERT INTO point_events(discord_id, delta, source, ref, created_at) VALUES(30, 10, 'stat_seed',"
+                 " 'pathfinder', ?)", (iso(utcnow()),))
+    conn.execute("UPDATE users SET points = 50 WHERE discord_id = 30")
+    # an old top-up that wrote nothing (earned 160 > vanguard's 150) still left its decided submission
+    engine.place(31, "green_horn")
+    engine.add_points(31, 160, "job")
+    conn.execute("INSERT INTO stats_submissions(discord_id, kind, source, status, decided_rank, created_at)"
+                 " VALUES(31, 'promotion', 'manual', 'auto_placed', 'vanguard', ?)", (iso(utcnow()),))
+    changes = engine.backfill_additive_seeds()
+    assert engine.get_user(30)["points"] == 90                                   # 50 + 40
+    assert engine.get_user(31)["points"] == 310 and engine.get_user(31)["rank_key"] == "vanguard"   # 150 + 160
+    assert changes == [] or all(c.new in ("pathfinder", "vanguard") for c in changes)
+    assert engine.backfill_additive_seeds() == []                               # runs once
+    assert engine.get_user(30)["points"] == 90
 
 
 def test_monotonic_rank_property(engine):
