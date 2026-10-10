@@ -122,6 +122,13 @@ points:
     - {label: "Double (x2)",     multiplier: 2}
     - {label: "Triple (x3)",     multiplier: 3}
 
+  # Guild Master only: when confirming their own job they can reward up to max_winners raiders from the completion
+  # order (a squad job), either "placed" (shares below, fastest first) or "full" (everyone the whole reward).
+  # Caps still apply to each raider. Everyone else's jobs reward exactly one raider.
+  job_squad_rewards:
+    max_winners: 3
+    placed_shares: [1.0, 0.6, 0.3]   # 1st, 2nd, 3rd
+
   job_rules:
     helper_min_days_in_guild: 3
     max_attempters_per_job: 8        # raiders who can tap "I'm attempting" on one job (all join its private thread)

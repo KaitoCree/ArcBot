@@ -46,6 +46,8 @@ itself: restarts on crash, nightly backups, self-checks on startup.
   gets the credit. Only that raider earns points (with caps).
 - After completion the thread stays up until the poster vouches for that raider (a button in the thread opens the
   vouch form; any vouch in #vouch counts too), or `vouch_wait_days` pass. Then it's deleted (or archived).
+- Guild Master only: on their own jobs, *Review completions* lets them reward up to 3 raiders (a squad job),
+  either placed (1st/2nd/3rd shares, `points.job_squad_rewards`) or the full reward each. Caps apply per raider.
 - Guild Master only: the Post a job form has a *Reward boost* pick (`points.job_xp_boosts`) for special posts.
   Nobody else sees it. The board marks the post as a special job without showing any numbers.
 - Check-ins on day 3 and 10; confirmations that stall go to mods instead of expiring.

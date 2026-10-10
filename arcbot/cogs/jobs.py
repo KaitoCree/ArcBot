@@ -44,7 +44,7 @@ def _mentions(ids) -> str:
     return " ".join(f"<@{i}>" for i in ids)
 
 
-def job_embed(app: "App", job, attempters: list[int] | tuple = ()) -> discord.Embed:
+def job_embed(app: "App", job, attempters: list[int] | tuple = (), winners: list[int] | tuple = ()) -> discord.Embed:
     c = app.copy
     tier = app.cfg.job_tiers[job["tier"]]
     special = float(job["xp_multiplier"] or 1) > 1
@@ -58,7 +58,7 @@ def job_embed(app: "App", job, attempters: list[int] | tuple = ()) -> discord.Em
         "accepted": c.t("jobs.status_attempting"),
         "awaiting_confirm": c.t("jobs.status_awaiting"),
         "needs_mod": c.t("jobs.status_needs_mod"),
-        "completed": c.t("jobs.status_done", helper=helper),
+        "completed": c.t("jobs.status_done", helper=_mentions(winners) or helper),
         "cancelled": c.t("jobs.status_cancelled"),
         "expired": c.t("jobs.status_expired"),
         "removed": c.t("jobs.status_removed"),
@@ -239,37 +239,69 @@ def _ordinal(n: int) -> str:
 
 
 class CompletionReview(discord.ui.View):
-    """Ephemeral, poster only: pick who really completed it from the completion order, or turn one down."""
+    """Ephemeral, poster only: pick who really completed it from the completion order, or turn them down.
 
-    def __init__(self, cog: "Jobs", job_id: int, pending: list[tuple[int, str]]):
+    A Guild Master can pick up to squad_max_winners (a squad job) and how the reward is split."""
+
+    def __init__(self, cog: "Jobs", job_id: int, pending: list[tuple[int, str]], *, squad: bool = False):
         super().__init__(timeout=10 * 60)
-        c = cog.app.copy
+        c, cfg = cog.app.copy, cog.app.cfg
         self.cog, self.job_id = cog, job_id
-        order = {uid: n for n, (uid, _) in enumerate(pending)}
-        self.pick = discord.ui.Select(placeholder=c.t("jobs.review_pick"), options=[
-            discord.SelectOption(label=f"{name}"[:100], value=str(uid), default=order[uid] == 0)
-            for uid, name in pending])
+        most = min(cfg.squad_max_winners, len(pending)) if squad else 1
+        self.pick = discord.ui.Select(
+            placeholder=c.t("jobs.review_pick_squad" if most > 1 else "jobs.review_pick"), min_values=1,
+            max_values=most, options=[discord.SelectOption(label=f"{name}"[:100], value=str(uid), default=n == 0)
+                                      for n, (uid, name) in enumerate(pending)])
         self.pick.callback = self._noop
         self.add_item(self.pick)
+        self.mode: discord.ui.Select | None = None
+        if most > 1:
+            shares = " / ".join(f"{x * 100:g}%" for x in cfg.squad_placed_shares[:cfg.squad_max_winners])
+            self.mode = discord.ui.Select(options=[
+                discord.SelectOption(label=c.t("jobs.mode_placed", shares=shares)[:100], value="placed", default=True),
+                discord.SelectOption(label=c.t("jobs.mode_full")[:100], value="full")])
+            self.mode.callback = self._noop
+            self.add_item(self.mode)
         ok = discord.ui.Button(label=c.t("jobs.btn_confirm"), style=discord.ButtonStyle.success)
         ok.callback = self._confirm
         no = discord.ui.Button(label=c.t("jobs.btn_notdone"), style=discord.ButtonStyle.danger)
         no.callback = self._reject
         self.add_item(ok)
         self.add_item(no)
-        self.default = pending[0][0] if pending else None
+        self.default = [pending[0][0]] if pending else []
 
-    def chosen(self) -> int | None:
-        return int(self.pick.values[0]) if self.pick.values else self.default
+    def chosen(self) -> list[int]:
+        return [int(v) for v in self.pick.values] if self.pick.values else self.default
+
+    def chosen_mode(self) -> str:
+        return (self.mode.values[0] if self.mode is not None and self.mode.values else "placed")
 
     async def _noop(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
-        await self.cog.confirm_completion(interaction, self.job_id, self.chosen())
+        await self.cog.confirm_completion(interaction, self.job_id, self.chosen(), mode=self.chosen_mode())
 
     async def _reject(self, interaction: discord.Interaction) -> None:
         await self.cog.reject_completion(interaction, self.job_id, self.chosen())
+
+
+class VouchPicker(discord.ui.View):
+    """Several raiders were rewarded: one button each, opening the vouch form for that raider."""
+
+    def __init__(self, cog: "Jobs", members: list[discord.Member]):
+        super().__init__(timeout=10 * 60)
+        for m in members:
+            b = discord.ui.Button(label=cog.app.copy.t("jobs.btn_vouch", name=m.display_name)[:80],
+                                  style=discord.ButtonStyle.primary)
+            b.callback = self._opener(cog, m)
+            self.add_item(b)
+
+    @staticmethod
+    def _opener(cog: "Jobs", member: discord.Member):
+        async def open_form(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(VouchModal(cog.bot.get_cog("Vouch"), member))  # type: ignore[arg-type]
+        return open_form
 
 
 class TierSelectView(discord.ui.View):
@@ -406,7 +438,8 @@ class Jobs(commands.Cog):
             return
         try:
             await app.gateway.edit(ch.get_partial_message(job["message_id"]),
-                                   embed=job_embed(app, job, self.service.attempters(job["id"])),
+                                   embed=job_embed(app, job, self.service.attempters(job["id"]),
+                                                   self.service.winners(job["id"])),
                                    view=job_view(app, job), user_texts=[job["title"], job["description"]])
         except discord.HTTPException as exc:
             log.warning("could not refresh job %s: %s", job["id"], exc)
@@ -551,13 +584,16 @@ class Jobs(commands.Cog):
     async def _after_completion(self, job) -> None:
         """Thank everyone in the thread and ask the poster to vouch; the thread closes after the vouch."""
         c = self.app.copy
-        if not job["helper_id"]:
+        winners = self.service.winners(job["id"]) or ([job["helper_id"]] if job["helper_id"] else [])
+        if not winners:
             return
-        helper = await self.app.member(job["helper_id"])
-        name = helper.display_name if helper is not None else "the helper"
-        view = _buttons(job["id"], [("vouch", c.t("jobs.btn_vouch", name=name)[:80], discord.ButtonStyle.primary)])
-        await self._say(job, c.t("jobs.done_thread", helper=f"<@{job['helper_id']}>", poster=f"<@{job['poster_id']}>"),
-                        [job["poster_id"], job["helper_id"]], view=view)
+        label = c.t("jobs.btn_vouch_squad")
+        if len(winners) == 1:
+            helper = await self.app.member(winners[0])
+            label = c.t("jobs.btn_vouch", name=helper.display_name if helper is not None else "the helper")
+        view = _buttons(job["id"], [("vouch", label[:80], discord.ButtonStyle.primary)])
+        await self._say(job, c.t("jobs.done_thread", helper=_mentions(winners), poster=f"<@{job['poster_id']}>"),
+                        [job["poster_id"], *winners], view=view)
 
     # ------------------------------------------------------------ job buttons
     async def on_accept(self, interaction: discord.Interaction, job_id: int, *, pending_ok: bool = False) -> None:
@@ -656,39 +692,53 @@ class Jobs(commands.Cog):
             if r["rejected_at"] is None:
                 m = await app.member(r["user_id"])
                 pending.append((r["user_id"], f"{_ordinal(n)}: {m.display_name if m else r['user_id']}"))
-        return completion_order_text(app, rows), (CompletionReview(self, job_id, pending) if pending else None)
+        poster = await app.member(self.service.get(job_id)["poster_id"])
+        squad = poster is not None and app.is_guild_master(poster)  # Guild Master: reward up to a squad
+        return completion_order_text(app, rows), (CompletionReview(self, job_id, pending, squad=squad)
+                                                  if pending else None)
 
-    async def confirm_completion(self, interaction: discord.Interaction, job_id: int, user_id: int | None) -> None:
+    async def confirm_completion(self, interaction: discord.Interaction, job_id: int, winners: list[int] | None,
+                                 *, mode: str = "placed") -> None:
         app, c = self.app, self.app.copy
-        job, award = self.service.confirm(job_id, interaction.user.id, user_id)
-        if award is None:
+        job, awards = self.service.confirm_many(job_id, interaction.user.id, winners, mode=mode,
+                                                poster_is_guild_master=app.is_guild_master(interaction.user))
+        if not awards:
             waiting = job is not None and job["status"] == "awaiting_confirm"
             msg = c.t("jobs.only_poster") if waiting and interaction.user.id != job["poster_id"] else c.t("jobs.taken")
             await interaction.response.send_message(msg, ephemeral=True)
             return
-        log.info("job %s confirmed: helper %s awarded %s (cap %s)", job_id, job["helper_id"], award.points, award.capped)
-        await interaction.response.edit_message(content=c.t("jobs.completed", helper=f"<@{job['helper_id']}>"),
-                                                view=None)
+        for uid, award in awards:
+            log.info("job %s confirmed (%s): %s awarded %s (cap %s)", job_id, job["reward_mode"], uid, award.points,
+                     award.capped)
+        names = _mentions(uid for uid, _ in awards)
+        await interaction.response.edit_message(content=c.t("jobs.completed", helper=names), view=None)
         await self._refresh(job)
-        if award.change is not None:
-            await app.apply_change(award.change, await app.member(job["helper_id"]))
+        for uid, award in awards:
+            if award.change is not None:
+                await app.apply_change(award.change, await app.member(uid))
         await self._after_completion(job)
 
-    async def reject_completion(self, interaction: discord.Interaction, job_id: int, user_id: int | None) -> None:
+    async def reject_completion(self, interaction: discord.Interaction, job_id: int,
+                                user_ids: list[int] | None) -> None:
         c = self.app.copy
-        job, turned_down = self.service.reject_completion(job_id, interaction.user.id, user_id)
+        job, turned = None, []
+        for uid in (user_ids or [None]):
+            row, who = self.service.reject_completion(job_id, interaction.user.id, uid)
+            if row is not None:
+                job = row
+                turned.append(who)
         if job is None:
             await interaction.response.send_message(c.t("jobs.taken"), ephemeral=True)
             return
-        log.info("job %s: poster turned down %s's completion", job_id, turned_down)
+        turned_down = " ".join(f"<@{u}>" for u in turned)
+        log.info("job %s: poster turned down %s's completion", job_id, turned)
         if job["status"] == "awaiting_confirm":  # someone else is next in line: show the updated order
             content, view = await self._review_panel(job_id)
             await interaction.response.edit_message(content=content, view=view)
         else:
             await interaction.response.edit_message(content=c.t("jobs.sent_back"), view=None)
         await self._refresh(job)
-        await self._say(job, c.t("jobs.not_done_yet", helper=f"<@{turned_down}>", poster=f"<@{job['poster_id']}>"),
-                        [turned_down])
+        await self._say(job, c.t("jobs.not_done_yet", helper=turned_down, poster=f"<@{job['poster_id']}>"), turned)
 
     async def on_vouch(self, interaction: discord.Interaction, job_id: int) -> None:
         """The poster's "Vouch for <helper>" button after completion: opens the usual vouch form."""
@@ -703,12 +753,16 @@ class Jobs(commands.Cog):
         if job["vouched_at"]:
             await interaction.response.send_message(c.t("jobs.already_vouched"), ephemeral=True)
             return
-        helper = await app.member(job["helper_id"])
         vouch = self.bot.get_cog("Vouch")
-        if helper is None or vouch is None:
+        members = [m for uid in (self.service.winners(job_id) or [job["helper_id"]]) if (m := await app.member(uid))]
+        if not members or vouch is None:
             await interaction.response.send_message(c.t("errors.generic"), ephemeral=True)
             return
-        await interaction.response.send_modal(VouchModal(vouch, helper))  # type: ignore[arg-type]
+        if len(members) > 1:  # squad job: one vouch button per rewarded raider
+            await interaction.response.send_message(c.t("jobs.vouch_pick"), view=VouchPicker(self, members),
+                                                    ephemeral=True)
+            return
+        await interaction.response.send_modal(VouchModal(vouch, members[0]))  # type: ignore[arg-type]
 
     # ------------------------------------------------------------ nudges / expiry
     @tasks.loop(hours=1)

@@ -316,36 +316,71 @@ class JobService:
     def confirm(self, job_id: int, by: int, user_id: int | None = None,
                 now: datetime | None = None) -> tuple[sqlite3.Row | None, Award | None]:
         """The poster confirms who really completed it (default: the earliest pending); that raider is rewarded."""
+        row, awards = self.confirm_many(job_id, by, [user_id] if user_id is not None else None, now=now)
+        return row, (awards[0][1] if awards else None)
+
+    def confirm_many(self, job_id: int, by: int, winners: list[int] | None = None, *, mode: str = "single",
+                     poster_is_guild_master: bool = False, now: datetime | None = None
+                     ) -> tuple[sqlite3.Row | None, list[tuple[int, Award]]]:
+        """Confirm the job and reward winners (default: the earliest pending), ordered by completion.
+
+        Only a Guild Master may reward more than one (up to squad_max_winners): mode "placed" scales each by
+        placed_shares (1st, 2nd, 3rd), "full" gives everyone the whole reward."""
         now = now or utcnow()
         with transaction(self.conn):
             job = self.get(job_id)
             if job is None or job["status"] != "awaiting_confirm" or by != job["poster_id"]:
-                return job, None
+                return job, []
             pending = self.pending_completions(job_id)
-            helper = user_id if user_id is not None else (pending[0] if pending else job["helper_id"])
-            if pending and helper not in pending:
-                return job, None
-            self.conn.execute("UPDATE jobs SET helper_id = ? WHERE id = ?", (helper, job_id))
+            if not winners:
+                winners = [pending[0] if pending else job["helper_id"]]
+            winners = list(dict.fromkeys(winners))
+            if len(winners) > 1 and (not poster_is_guild_master or len(winners) > self.cfg.squad_max_winners
+                                     or mode not in ("placed", "full")):
+                return job, []
+            if pending and any(w not in pending for w in winners):
+                return job, []
+            winners.sort(key=lambda w: pending.index(w) if w in pending else 0)  # fastest successful first
+            mode = mode if len(winners) > 1 else "single"
+            self.conn.execute("UPDATE jobs SET helper_id = ?, reward_mode = ? WHERE id = ?",
+                              (winners[0], mode, job_id))
             job = self.get(job_id)
-            award = self._award(job, now)
+            awards = []
+            for place, uid in enumerate(winners, 1):
+                share = self.cfg.squad_placed_shares[place - 1] if mode == "placed" else 1.0
+                awards.append((uid, self._award(job, now, helper=uid, place=place, share=share)))
             self.conn.execute("UPDATE jobs SET status = 'completed', closed_at = ?, awarded_points = ? WHERE id = ?",
-                              (iso(now), award.points, job_id))
-            return self.get(job_id), award
+                              (iso(now), awards[0][1].points, job_id))
+            return self.get(job_id), awards
 
-    def _award(self, job: sqlite3.Row, now: datetime) -> Award:
-        helper, poster = job["helper_id"], job["poster_id"]
-        points = self.tier(job["tier"]).points
+    def winners(self, job_id: int) -> list[int]:
+        """Rewarded raiders, 1st place first."""
+        return [r["user_id"] for r in self.conn.execute(
+            "SELECT user_id FROM job_rewards WHERE job_id = ? ORDER BY place", (job_id,))]
+
+    def _award(self, job: sqlite3.Row, now: datetime, *, helper: int | None = None, place: int = 1,
+               share: float = 1.0) -> Award:
+        helper = helper if helper is not None else job["helper_id"]
+        poster = job["poster_id"]
+        base = self.tier(job["tier"]).points
+        points = max(1, round(base * share))
         # Guild Master boost: the extra rides on top of the daily cap (the pair cap still stops farming)
-        bonus = round(points * float(job["xp_multiplier"] or 1)) - points
+        bonus = max(points, round(base * float(job["xp_multiplier"] or 1) * share)) - points
+        award = self._capped(job, helper, poster, points, bonus, now)
+        self.conn.execute("INSERT OR REPLACE INTO job_rewards(job_id, user_id, place, points, created_at)"
+                          " VALUES(?,?,?,?,?)", (job["id"], helper, place, award.points, iso(now)))
+        return award
+
+    def _capped(self, job: sqlite3.Row, helper: int, poster: int, points: int, bonus: int, now: datetime) -> Award:
         pair = self.conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND awarded_points > 0 AND poster_id = ?"
-            " AND helper_id = ? AND closed_at > ?",
+            "SELECT COUNT(*) FROM job_rewards r JOIN jobs j ON j.id = r.job_id WHERE r.points > 0"
+            " AND j.poster_id = ? AND r.user_id = ? AND r.created_at > ?",
             (poster, helper, iso(now - timedelta(days=30)))).fetchone()[0]
         if pair >= int(self.rules["pair_cap_per_30_days"]):
             return Award(0, None, "pair_cap")
         today = self.conn.execute(
-            "SELECT COALESCE(SUM(awarded_points), 0) FROM jobs WHERE status = 'completed' AND helper_id = ?"
-            " AND closed_at > ?", (helper, iso(now - timedelta(days=1)))).fetchone()[0]
+            "SELECT COALESCE(SUM(points), 0) FROM job_rewards WHERE user_id = ? AND created_at > ?",
+            (helper, iso(now - timedelta(days=1)))).fetchone()[0]
         room = int(self.rules["helper_daily_job_point_cap"]) - int(today)
         capped = None
         if room <= 0:
@@ -393,14 +428,15 @@ class JobService:
 
     # ------------------------------------------------------------ vouch / thread cleanup
     def note_vouch(self, voucher_id: int, recipients: list[int], now: datetime | None = None) -> list[sqlite3.Row]:
-        """The poster vouched for the raider who completed their job: that job's thread can go."""
+        """The poster vouched for a raider rewarded for their job: that job's thread can go."""
         if not recipients:
             return []
         marks = ",".join("?" * len(recipients))
         with transaction(self.conn):
             rows = self.conn.execute(
-                f"SELECT id FROM jobs WHERE status = 'completed' AND vouched_at IS NULL AND poster_id = ?"
-                f" AND helper_id IN ({marks})", (voucher_id, *recipients)).fetchall()
+                f"SELECT DISTINCT j.id FROM jobs j JOIN job_rewards r ON r.job_id = j.id WHERE j.status = 'completed'"
+                f" AND j.vouched_at IS NULL AND j.poster_id = ? AND r.user_id IN ({marks})",
+                (voucher_id, *recipients)).fetchall()
             for r in rows:
                 self.conn.execute("UPDATE jobs SET vouched_at = ? WHERE id = ?", (iso(now or utcnow()), r["id"]))
             return [self.get(r["id"]) for r in rows]

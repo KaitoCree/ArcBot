@@ -73,6 +73,7 @@ def test_job_attempts_migration_keeps_existing_helpers():
     assert rows[3]["thread_closed_at"] and rows[1]["thread_closed_at"] is None  # old finished threads are left alone
     assert rows[1]["xp_multiplier"] == 1
     assert [tuple(r) for r in c.execute("SELECT job_id, user_id FROM job_completions")] == [(2, 3)]
+    assert [tuple(r) for r in c.execute("SELECT job_id, user_id, place FROM job_rewards")] == [(3, 4, 1)]
 
 
 def test_xp_boosts_validated(cfg):
