@@ -100,7 +100,6 @@ points:
     max_counted_vouches_per_recipient_per_day: 3   # a member can be vouched a few times a day by different people
     near_miss_hint: true          # short "@name ty" messages get a self-deleting format hint (once a day per person)
     voucher_must_be_placed: true  # Newcomers cannot vouch
-    voucher_min_days_in_guild: 3  # brand-new accounts' vouches don't count yet (same reaction, rules stay hidden)
     always_react_when_well_formed: true   # same reaction whether counted or not (do not leak the rules)
   mod_award: {min: 1, max: 25}    # /award; reason required; logged
 
@@ -122,11 +121,14 @@ points:
     - {label: "Double (x2)",     multiplier: 2}
     - {label: "Triple (x3)",     multiplier: 3}
 
-  # Guild Master only: the Reward boost pick also offers "Squad job". On a squad job the raider attempting taps
-  # "Add squad members"; when the poster confirms them, every squad member gets the full reward too (caps apply
-  # per raider). max_size counts the raider who adds the squad.
-  job_squads:
-    max_size: 3
+  # Guild Master only: the Reward boost pick also offers "Challenge". A challenge stays open until the Guild Master
+  # closes it. A raider taps I'm attempting and adds squad members (who must accept); at least one member uploads a
+  # post-raid summary screenshot, and the Guild Master approves the clear. Closing it posts "@raiders completed". Every approved squad member gets the tier reward (x boost) once per
+  # challenge; the first approved squad also gets first_clear_bonus (a share of the reward). Job caps don't apply.
+  job_challenges:
+    max_squad_size: 3
+    proof_window_minutes: 30      # screenshots further apart than this get flagged for the reviewer
+    first_clear_bonus: 0.5
 
   job_rules:
     helper_min_days_in_guild: 3

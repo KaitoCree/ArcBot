@@ -18,7 +18,7 @@ from .db import connect
 
 log = logging.getLogger("arcbot")
 
-COGS = ["onboarding", "promotion", "vouch", "jobs", "modtools", "timers"]
+COGS = ["onboarding", "promotion", "vouch", "jobs", "challenges", "modtools", "timers"]
 
 
 def _backup_time(cfg) -> dtime:
@@ -45,9 +45,11 @@ class ArcBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         from .cogs.intake_ui import ReviewButton
+        from .cogs.challenges import ChallengeButton, ChallengeReviewButton, SquadButton
         from .cogs.jobs import JobButton, JobReviewButton
 
-        self.add_dynamic_items(ReviewButton, JobButton, JobReviewButton)
+        self.add_dynamic_items(ReviewButton, JobButton, JobReviewButton, ChallengeButton, SquadButton,
+                               ChallengeReviewButton)
         for name in COGS:
             await self.load_extension(f"arcbot.cogs.{name}")
         if self.app.guild_id:

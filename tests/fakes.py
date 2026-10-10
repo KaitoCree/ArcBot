@@ -28,6 +28,14 @@ class FakeMessage:
         return None
 
 
+class FakeAttachment:
+    def __init__(self, data: bytes, content_type: str = "image/png"):
+        self.data, self.content_type, self.size = data, content_type, len(data)
+
+    async def read(self) -> bytes:
+        return self.data
+
+
 class FakeChannel:
     def __init__(self, name: str, guild=None):
         self.id = next(_ids)
@@ -86,6 +94,7 @@ class RecordingGateway(Gateway):
         self.reactions: list[tuple[int, str]] = []
         self.threads: list[FakeThread] = []
         self.sent: list[tuple[Any, str]] = []  # (target, text) for player-visible sends
+        self.dms: list[tuple[int, str]] = []
 
     def _rec(self, mod_only: bool, content: str | None, embed: discord.Embed | None, user_texts=()):
         text = (content or "") + "\n" + _embed_text(embed)
@@ -107,8 +116,9 @@ class RecordingGateway(Gateway):
                    attachments=None):
         self._rec(mod_only, content, embed, user_texts)
 
-    async def dm(self, user, content):
-        self._rec(False, content, None)
+    async def dm(self, user, content, *, user_texts=()):
+        self._rec(False, content, None, user_texts)
+        self.dms.append((user.id, content))
         return True
 
     async def react(self, message, emoji):
@@ -134,6 +144,7 @@ class RecordingGateway(Gateway):
 
     async def close_thread(self, thread, *, delete):
         thread.closed = True
+        thread.deleted = delete
         return True
 
     async def set_roles(self, member, add, remove, reason):

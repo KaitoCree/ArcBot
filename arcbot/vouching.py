@@ -61,7 +61,6 @@ class VouchService:
         self.conn, self.cfg, self.engine = conn, cfg, engine
 
     def record(self, message_id: int, voucher_id: int, recipients: list[int], text: str,
-               voucher_days_in_guild: float | None = None,
                now: datetime | None = None) -> list[VouchOutcome]:
         rules = self.cfg.vouch_rules
         now = now or utcnow()
@@ -79,11 +78,8 @@ class VouchService:
             rcap = int(rules.get("max_counted_vouches_per_recipient_per_day", 10**9))
             for rid in recipients:
                 reason = None
-                min_days = float(rules.get("voucher_min_days_in_guild", 0) or 0)
                 if rules.get("voucher_must_be_placed", True) and not voucher_placed:
                     reason = "voucher_unplaced"
-                elif min_days and voucher_days_in_guild is not None and voucher_days_in_guild < min_days:
-                    reason = "voucher_too_new"  # stops throwaway accounts (e.g. free weekends) farming vouches
                 elif self.conn.execute(
                         "SELECT 1 FROM vouches WHERE voucher_id = ? AND recipient_id = ? AND counted = 1"
                         " AND created_at > ? LIMIT 1", (voucher_id, rid, pair_since)).fetchone():

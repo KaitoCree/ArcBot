@@ -14,6 +14,7 @@ from discord.ext import commands, tasks
 
 from ..config import ROOT
 from ..intake import delete_image
+from ..challenges import ChallengeService
 from ..jobs import JobService
 from ..panels import ensure_panel
 from .vouch import VouchModal
@@ -45,12 +46,13 @@ def _mentions(ids) -> str:
 
 
 def job_embed(app: "App", job, attempters: list[int] | tuple = (), winners: list[int] | tuple = (),
-              squads: dict[int, list[int]] | None = None) -> discord.Embed:
+              challenge: tuple[list[tuple[int, list[int]]], int] | None = None) -> discord.Embed:
+    """challenge = (hall of clears [(place, members)], squads in progress) for a challenge post."""
     c = app.copy
     tier = app.cfg.job_tiers[job["tier"]]
     special = float(job["xp_multiplier"] or 1) > 1
     e = discord.Embed(title=job["title"], description=job["description"],
-                      color=discord.Color.gold() if special or job["squad"] else discord.Color.blurple())
+                      color=discord.Color.gold() if special or job["kind"] == "challenge" else discord.Color.blurple())
     e.add_field(name=c.t("jobs.posted_by"), value=f"<@{job['poster_id']}>", inline=True)
     e.add_field(name=c.t("jobs.open_to"), value=tier.label, inline=True)
     helper = f"<@{job['helper_id']}>" if job["helper_id"] else ""
@@ -68,18 +70,46 @@ def job_embed(app: "App", job, attempters: list[int] | tuple = (), winners: list
     e.add_field(name=c.t("jobs.status"), value=status, inline=True)
     if special:
         e.add_field(name=c.t("jobs.special"), value=c.t("jobs.special_value"), inline=True)
-    if job["squad"]:
-        e.add_field(name=c.t("jobs.squad"), value=c.t("jobs.squad_value", size=app.cfg.squad_max_size), inline=True)
+    if job["kind"] == "challenge":
+        return _challenge_fields(app, job, e, *(challenge or ([], 0)))
     if attempters and job["status"] in JobService.JOINABLE:
-        squads = squads or {}
-        lines = [f"<@{a}>" + (f" + {_mentions(squads[a])}" if squads.get(a) else "") for a in attempters]
-        e.add_field(name=c.t("jobs.attempting"), value="\n".join(lines)[:1024], inline=False)
+        e.add_field(name=c.t("jobs.attempting"), value=_mentions(attempters)[:1024], inline=False)
     e.set_footer(text=f"Job #{job['id']}")
+    return e
+
+
+def _challenge_fields(app: "App", job, e: discord.Embed, hall: list[tuple[int, list[int]]],
+                      in_progress: int) -> discord.Embed:
+    c = app.copy
+    e.title = f"{c.t('challenge.title_prefix')} {job['title']}"[:256]
+    e.set_field_at(2, name=c.t("jobs.status"),
+                   value=c.t("challenge.status_open") if job["status"] == "open" else c.t("challenge.status_closed"))
+    e.add_field(name=c.t("challenge.squad_field"), inline=True,
+                value=c.t("challenge.squad_value", size=app.cfg.challenge_max_squad, in_progress=in_progress))
+    if hall:
+        lines = []
+        for place, members in hall[:15]:
+            who = _mentions(members)
+            lines.append(c.t("challenge.hall_first", squad=who) if place == 1 else f"{place}. {who}")
+        if len(hall) > 15:
+            lines.append(c.t("challenge.hall_more", more=len(hall) - 15))
+        e.add_field(name=c.t("challenge.hall"), value="\n".join(lines)[:1024], inline=False)
+    else:
+        e.add_field(name=c.t("challenge.hall"), value=c.t("challenge.hall_empty"), inline=False)
     return e
 
 
 def job_view(app: "App", job) -> discord.ui.View | None:
     c = app.copy
+    if job["kind"] == "challenge":
+        if job["status"] != "open":
+            return None
+        from .challenges import ChallengeButton  # challenges.py imports from this module
+        v = discord.ui.View(timeout=None)
+        v.add_item(ChallengeButton("form", job["id"], label=c.t("challenge.btn_form"), style=discord.ButtonStyle.success))
+        v.add_item(ChallengeButton("close", job["id"], label=c.t("challenge.btn_close"),
+                                   style=discord.ButtonStyle.secondary))
+        return v
     attempt = ("accept", c.t("jobs.btn_accept"), discord.ButtonStyle.primary)
     cancel = ("cancel", c.t("jobs.btn_cancel"), discord.ButtonStyle.secondary)
     flag = ("flag", c.t("jobs.btn_flag"), discord.ButtonStyle.secondary)
@@ -93,8 +123,6 @@ def job_view(app: "App", job) -> discord.ui.View | None:
     }.get(job["status"])
     if not buttons:
         return None
-    if job["squad"] and job["status"] in ("accepted", "awaiting_confirm"):
-        buttons = [*buttons, ("squad", c.t("jobs.btn_squad"), discord.ButtonStyle.primary)]
     return _buttons(job["id"], buttons)
 
 
@@ -111,7 +139,8 @@ def review_embed(app: "App", job, *, decided: str | None = None, heading: str = 
                       color=discord.Color.orange() if decided is None else discord.Color.dark_grey())
     e.add_field(name="Poster", value=f"<@{job['poster_id']}>", inline=True)
     boost = float(job["xp_multiplier"] or 1)
-    boost_txt = (f" x{boost:g} Guild Master boost" if boost > 1 else "") + (", squad job" if job["squad"] else "")
+    boost_txt = (f" x{boost:g} Guild Master boost" if boost > 1 else "") + (", challenge" if job["kind"] == "challenge"
+                                                                             else "")
     e.add_field(name="Tier", value=f"{tier.label} (hidden reward {tier.points}{boost_txt})", inline=True)  # mod-only
     reasons = json.loads(job["flag_reasons"] or "[]")
     e.add_field(name="Why it's here", value="\n".join(f"• {r}" for r in reasons) or "flagged by a member",
@@ -155,7 +184,7 @@ class PostJobModal(discord.ui.Modal):
         # Guild Master only: everyone else never gets this field, so it can't be picked
         self.special_in: discord.ui.Select | None = None
         if can_boost:
-            options = [discord.SelectOption(label=(b.label if not sq else c.t("jobs.squad_option", boost=b.label))[:100],
+            options = [discord.SelectOption(label=(b.label if not sq else c.t("jobs.challenge_option", boost=b.label))[:100],
                                             value=f"{i}:{sq}", default=(i, sq) == (0, 0))
                        for sq in (0, 1) for i, b in enumerate(app.cfg.job_xp_boosts)]
             self.special_in = discord.ui.Select(custom_id="special", required=False, min_values=0, max_values=1,
@@ -164,12 +193,12 @@ class PostJobModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         cog: Jobs = interaction.client.get_cog("Jobs")  # type: ignore[assignment]
-        boost, squad = 0, False
+        boost, challenge = 0, False
         if self.special_in is not None and self.special_in.values:
             b, sq = self.special_in.values[0].split(":")
-            boost, squad = int(b), sq == "1"
+            boost, challenge = int(b), sq == "1"
         await cog.submit(interaction, self.title_in.value.strip(), self.desc_in.value.strip(), self.tier_in.values[0],
-                         list(self.image_in.values), boost=boost, squad=squad)
+                         list(self.image_in.values), boost=boost, challenge=challenge)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         await _error(interaction, error)
@@ -195,7 +224,7 @@ class BoardPanel(discord.ui.View):
 
 
 class JobButton(discord.ui.DynamicItem[discord.ui.Button],
-                template=r"arcbot:job:(?P<action>accept|join|cancel|complete|review|confirm|notdone|vouch|squad|flag):(?P<id>\d+)"):
+                template=r"arcbot:job:(?P<action>accept|join|cancel|complete|review|confirm|notdone|vouch|flag):(?P<id>\d+)"):
     def __init__(self, action: str, job_id: int, *, label: str = "…", style=discord.ButtonStyle.secondary):
         super().__init__(discord.ui.Button(label=label, style=style, custom_id=f"arcbot:job:{action}:{job_id}"))
         self.action, self.job_id = action, job_id
@@ -234,15 +263,13 @@ class JobReviewButton(discord.ui.DynamicItem[discord.ui.Button],
         await getattr(cog, f"review_{self.action}")(interaction, self.job_id)
 
 
-def completion_order_text(app: "App", rows, squads: dict[int, list[int]] | None = None) -> str:
-    """The poster's view of who marked the job complete, fastest first (with their squad on squad jobs)."""
+def completion_order_text(app: "App", rows) -> str:
+    """The poster's view of who marked the job complete, fastest first."""
     c = app.copy
-    squads = squads or {}
     lines = []
     for n, r in enumerate(rows, 1):
         ts = int(datetime.fromisoformat(r["claimed_at"]).timestamp())
-        who = f"<@{r['user_id']}>" + (f" + {_mentions(squads[r['user_id']])}" if squads.get(r["user_id"]) else "")
-        line = c.t("jobs.order_line", n=_ordinal(n), who=who, when=f"<t:{ts}:R>")
+        line = c.t("jobs.order_line", n=_ordinal(n), who=f"<@{r['user_id']}>", when=f"<t:{ts}:R>")
         lines.append(f"~~{line}~~ {c.t('jobs.order_turned_down')}" if r["rejected_at"] else line)
     return c.t("jobs.order_heading") + "\n" + "\n".join(lines)
 
@@ -253,8 +280,7 @@ def _ordinal(n: int) -> str:
 
 
 class CompletionReview(discord.ui.View):
-    """Ephemeral, poster only: pick who really completed it from the completion order, or turn them down.
-    On a squad job, confirming someone rewards their squad too."""
+    """Ephemeral, poster only: pick who really completed it from the completion order, or turn them down."""
 
     def __init__(self, cog: "Jobs", job_id: int, pending: list[tuple[int, str]]):
         super().__init__(timeout=10 * 60)
@@ -284,41 +310,6 @@ class CompletionReview(discord.ui.View):
 
     async def _reject(self, interaction: discord.Interaction) -> None:
         await self.cog.reject_completion(interaction, self.job_id, self.chosen())
-
-
-class SquadPicker(discord.ui.View):
-    """Ephemeral, for a raider attempting a squad job: pick squad members (Discord's member picker)."""
-
-    def __init__(self, cog: "Jobs", job_id: int, current: list[int]):
-        super().__init__(timeout=10 * 60)
-        self.cog, self.job_id = cog, job_id
-        room = cog.app.cfg.squad_max_size - 1
-        self.pick = discord.ui.UserSelect(placeholder=cog.app.copy.t("jobs.squad_pick", room=room), min_values=0,
-                                          max_values=room,
-                                          default_values=[discord.Object(u) for u in current[:room]])
-        self.pick.callback = self._picked
-        self.add_item(self.pick)
-
-    async def _picked(self, interaction: discord.Interaction) -> None:
-        await self.cog.save_squad(interaction, self.job_id, list(self.pick.values))
-
-
-class VouchPicker(discord.ui.View):
-    """Several raiders were rewarded: one button each, opening the vouch form for that raider."""
-
-    def __init__(self, cog: "Jobs", members: list[discord.Member]):
-        super().__init__(timeout=10 * 60)
-        for m in members:
-            b = discord.ui.Button(label=cog.app.copy.t("jobs.btn_vouch", name=m.display_name)[:80],
-                                  style=discord.ButtonStyle.primary)
-            b.callback = self._opener(cog, m)
-            self.add_item(b)
-
-    @staticmethod
-    def _opener(cog: "Jobs", member: discord.Member):
-        async def open_form(interaction: discord.Interaction) -> None:
-            await interaction.response.send_modal(VouchModal(cog.bot.get_cog("Vouch"), member))  # type: ignore[arg-type]
-        return open_form
 
 
 class TierSelectView(discord.ui.View):
@@ -362,6 +353,7 @@ class Jobs(commands.Cog):
         self.bot = bot
         self.app: App = bot.app  # type: ignore[attr-defined]
         self.service = JobService(self.app.conn, self.app.cfg, self.app.engine)
+        self.challenges = ChallengeService(self.app.conn, self.app.cfg, self.app.engine)
         self.panel = BoardPanel(self)
         bot.add_view(self.panel)
         self._thread_locks: dict[int, asyncio.Lock] = {}
@@ -384,7 +376,7 @@ class Jobs(commands.Cog):
 
     # ----------------------------------------------------------- posting
     async def submit(self, interaction: discord.Interaction, title: str, desc: str, tier: str,
-                     images: list[discord.Attachment], *, boost: int = 0, squad: bool = False) -> None:
+                     images: list[discord.Attachment], *, boost: int = 0, challenge: bool = False) -> None:
         app = self.app
         c = app.copy
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -392,18 +384,18 @@ class Jobs(commands.Cog):
         is_gm = app.is_guild_master(interaction.user)
         if boost and 0 <= boost < len(app.cfg.job_xp_boosts) and is_gm:
             multiplier = app.cfg.job_xp_boosts[boost].multiplier
-        squad = squad and is_gm
+        kind = "challenge" if challenge and is_gm else "job"
         image = images[0] if images else None
         if image and ((image.content_type or "").split(";")[0] not in ALLOWED_TYPES
                       or image.size > int(app.cfg.ocr.get("max_image_mb", 8)) * 1024 * 1024):
             image = None
         job_id, status, reasons = self.service.create(interaction.user.id, title, desc, tier, has_image=image is not None,
-                                                      xp_multiplier=multiplier, squad=squad)
+                                                      xp_multiplier=multiplier, kind=kind)
         if image is not None:
             ext = ALLOWED_TYPES[(image.content_type or "").split(";")[0]]
             (JOB_UPLOADS / f"job-{job_id}.{ext}").write_bytes(await image.read())
-        log.info("job %s by %s tier=%s boost=x%g squad=%s status=%s reasons=%s", job_id, interaction.user.id, tier,
-                 multiplier, squad, status, reasons)
+        log.info("job %s by %s kind=%s tier=%s boost=x%g status=%s reasons=%s", job_id, interaction.user.id, kind,
+                 tier, multiplier, status, reasons)
         if status == "open":
             await self.publish(job_id)
             if reasons:  # soft flag-list words: posted, mods get a heads-up with a Take down button
@@ -419,7 +411,7 @@ class Jobs(commands.Cog):
         ch = app.channel("job_board")
         if job is None or ch is None:
             return
-        files, embed = [], job_embed(app, job)
+        files, embed = [], job_embed(app, job, challenge=self._challenge_info(job))
         img = _image_path(job_id)
         if img is not None:
             files.append(discord.File(str(img), filename=f"job{img.suffix}"))
@@ -448,6 +440,11 @@ class Jobs(commands.Cog):
         if msg is not None:
             self.service.set_review(job_id, ch.id, msg.id)
 
+    def _challenge_info(self, job) -> tuple[list[tuple[int, list[int]]], int] | None:
+        if job["kind"] != "challenge":
+            return None
+        return self.challenges.hall(job["id"]), self.challenges.in_progress(job["id"])
+
     async def _refresh(self, job) -> None:
         app = self.app
         if not job["message_id"] or not job["channel_id"]:
@@ -458,7 +455,7 @@ class Jobs(commands.Cog):
         try:
             await app.gateway.edit(ch.get_partial_message(job["message_id"]),
                                    embed=job_embed(app, job, self.service.attempters(job["id"]),
-                                                   self.service.winners(job["id"]), self.service.squads(job["id"])),
+                                                   self.service.winners(job["id"]), self._challenge_info(job)),
                                    view=job_view(app, job), user_texts=[job["title"], job["description"]])
         except discord.HTTPException as exc:
             log.warning("could not refresh job %s: %s", job["id"], exc)
@@ -603,16 +600,13 @@ class Jobs(commands.Cog):
     async def _after_completion(self, job) -> None:
         """Thank everyone in the thread and ask the poster to vouch; the thread closes after the vouch."""
         c = self.app.copy
-        winners = self.service.winners(job["id"]) or ([job["helper_id"]] if job["helper_id"] else [])
-        if not winners:
+        if not job["helper_id"]:
             return
-        label = c.t("jobs.btn_vouch_squad")
-        if len(winners) == 1:
-            helper = await self.app.member(winners[0])
-            label = c.t("jobs.btn_vouch", name=helper.display_name if helper is not None else "the helper")
+        helper = await self.app.member(job["helper_id"])
+        label = c.t("jobs.btn_vouch", name=helper.display_name if helper is not None else "the helper")
         view = _buttons(job["id"], [("vouch", label[:80], discord.ButtonStyle.primary)])
-        await self._say(job, c.t("jobs.done_thread", helper=_mentions(winners), poster=f"<@{job['poster_id']}>"),
-                        [job["poster_id"], *winners], view=view)
+        await self._say(job, c.t("jobs.done_thread", helper=f"<@{job['helper_id']}>", poster=f"<@{job['poster_id']}>"),
+                        [job["poster_id"], job["helper_id"]], view=view)
 
     # ------------------------------------------------------------ job buttons
     async def on_accept(self, interaction: discord.Interaction, job_id: int, *, pending_ok: bool = False) -> None:
@@ -635,6 +629,7 @@ class Jobs(commands.Cog):
         if reason:
             msg = {
                 "taken": c.t("jobs.taken"),
+                "challenge": c.t("challenge.use_form"),
                 "own": c.t("jobs.cannot_accept_own"),
                 "already": c.t("jobs.already_attempting"),
                 "full": c.t("jobs.full"),
@@ -688,7 +683,7 @@ class Jobs(commands.Cog):
 
     async def on_review(self, interaction: discord.Interaction, job_id: int) -> None:
         """Poster only: the completion order (1st, 2nd, 3rd...) with confirm / not done for each."""
-        app, c = self.app, self.app.copy
+        c = self.app.copy
         job = self.service.get(job_id)
         if job is None or job["status"] != "awaiting_confirm":
             await interaction.response.send_message(c.t("jobs.taken"), ephemeral=True)
@@ -711,7 +706,7 @@ class Jobs(commands.Cog):
             if r["rejected_at"] is None:
                 m = await app.member(r["user_id"])
                 pending.append((r["user_id"], f"{_ordinal(n)}: {m.display_name if m else r['user_id']}"))
-        return (completion_order_text(app, rows, self.service.squads(job_id)),
+        return (completion_order_text(app, rows),
                 CompletionReview(self, job_id, pending) if pending else None)
 
     async def confirm_completion(self, interaction: discord.Interaction, job_id: int, user_id: int | None) -> None:
@@ -749,55 +744,6 @@ class Jobs(commands.Cog):
         await self._say(job, c.t("jobs.not_done_yet", helper=f"<@{turned_down}>", poster=f"<@{job['poster_id']}>"),
                         [turned_down])
 
-    _SQUAD_BLOCKS = {"not_squad": "jobs.taken", "taken": "jobs.taken", "not_attempting": "jobs.squad_not_attempting",
-                     "locked": "jobs.squad_locked", "in_squad": "jobs.squad_in_one"}
-
-    async def on_squad(self, interaction: discord.Interaction, job_id: int) -> None:
-        """Squad job: the raider attempting picks squad members."""
-        c = self.app.copy
-        job = self.service.get(job_id)
-        block = self.service.squad_block_reason(job, interaction.user.id) if job else "taken"
-        if block:
-            await interaction.response.send_message(c.t(self._SQUAD_BLOCKS[block]), ephemeral=True)
-            return
-        current = self.service.squad_of(job_id, interaction.user.id)
-        await interaction.response.send_message(c.t("jobs.squad_prompt", room=self.app.cfg.squad_max_size - 1),
-                                                view=SquadPicker(self, job_id, current), ephemeral=True)
-
-    async def save_squad(self, interaction: discord.Interaction, job_id: int, users: list) -> None:
-        app, c = self.app, self.app.copy
-        info: dict[int, tuple[str | None, float | None]] = {}
-        for u in users:
-            if getattr(u, "bot", False):
-                continue
-            app.adopt_from_roles(u)
-            row = app.engine.get_user(u.id)
-            joined = getattr(u, "joined_at", None)
-            days = (datetime.now(timezone.utc) - joined).total_seconds() / 86400 if joined else None
-            info[u.id] = (row["rank_key"] if row else None, days)
-        before = set(self.service.squad_of(job_id, interaction.user.id))
-        squad, skipped, block = self.service.set_squad(job_id, interaction.user.id, info)
-        if block:
-            await interaction.response.edit_message(content=c.t(self._SQUAD_BLOCKS[block]), view=None)
-            return
-        log.info("job %s: %s squad is now %s (skipped %s)", job_id, interaction.user.id, squad, skipped)
-        reasons = {"own": "jobs.squad_skip_own", "in_squad": "jobs.squad_skip_taken", "not_placed": "jobs.not_placed",
-                   "rank_too_low": "jobs.squad_skip_rank", "too_new": "jobs.squad_skip_new", "full": "jobs.full"}
-        text = c.t("jobs.squad_saved", squad=_mentions(squad)) if squad else c.t("jobs.squad_cleared")
-        for uid, why in skipped.items():
-            text += "\n" + c.t("jobs.squad_skipped", who=f"<@{uid}>", why=c.t(reasons[why]))
-        await interaction.response.edit_message(content=text, view=None)
-        job = self.service.get(job_id)
-        await self._refresh(job)
-        thread = await self._thread(job)
-        new = [u for u in squad if u not in before]
-        if thread is not None:
-            for uid in new:
-                await app.gateway.add_to_thread(thread, uid)
-        if new:
-            await self._say(job, c.t("jobs.squad_joined", leader=f"<@{interaction.user.id}>", squad=_mentions(new)),
-                            new)
-
     async def on_vouch(self, interaction: discord.Interaction, job_id: int) -> None:
         """The poster's "Vouch for <helper>" button after completion: opens the usual vouch form."""
         app, c = self.app, self.app.copy
@@ -811,16 +757,12 @@ class Jobs(commands.Cog):
         if job["vouched_at"]:
             await interaction.response.send_message(c.t("jobs.already_vouched"), ephemeral=True)
             return
+        helper = await app.member(job["helper_id"])
         vouch = self.bot.get_cog("Vouch")
-        members = [m for uid in (self.service.winners(job_id) or [job["helper_id"]]) if (m := await app.member(uid))]
-        if not members or vouch is None:
+        if helper is None or vouch is None:
             await interaction.response.send_message(c.t("errors.generic"), ephemeral=True)
             return
-        if len(members) > 1:  # squad job: one vouch button per rewarded raider
-            await interaction.response.send_message(c.t("jobs.vouch_pick"), view=VouchPicker(self, members),
-                                                    ephemeral=True)
-            return
-        await interaction.response.send_modal(VouchModal(vouch, members[0]))  # type: ignore[arg-type]
+        await interaction.response.send_modal(VouchModal(vouch, helper))  # type: ignore[arg-type]
 
     # ------------------------------------------------------------ nudges / expiry
     @tasks.loop(hours=1)

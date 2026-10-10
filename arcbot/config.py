@@ -160,9 +160,14 @@ class Config:
             errors.append("points.job_xp_boosts multipliers must be between 1 and 10")
         if len(self.job_xp_boosts) > 25:
             errors.append("points.job_xp_boosts can have at most 25 entries (Discord select limit)")
-        self.squad_max_size: int = int((pts.get("job_squads") or {}).get("max_size", 3))
-        if not 2 <= self.squad_max_size <= 26:
-            errors.append("points.job_squads.max_size must be 2..26")
+        ch = dict(pts.get("job_challenges") or {})
+        self.challenge_max_squad: int = int(ch.get("max_squad_size", 3))
+        self.challenge_proof_window_min: float = float(ch.get("proof_window_minutes", 30))
+        self.challenge_first_bonus: float = float(ch.get("first_clear_bonus", 0.5))
+        if not 1 <= self.challenge_max_squad <= 25:
+            errors.append("points.job_challenges.max_squad_size must be 1..25")
+        if not 0 <= self.challenge_first_bonus <= 5:
+            errors.append("points.job_challenges.first_clear_bonus must be 0..5")
         if int(self.job_rules.get("max_attempters_per_job", 8)) < 1:
             errors.append("points.job_rules.max_attempters_per_job must be >= 1")
 
