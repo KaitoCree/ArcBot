@@ -56,7 +56,7 @@ def job_embed(app: "App", job, attempters: list[int] | tuple = ()) -> discord.Em
     status = {
         "open": c.t("jobs.status_open"),
         "accepted": c.t("jobs.status_attempting"),
-        "awaiting_confirm": c.t("jobs.status_awaiting", helper=helper, poster=f"<@{job['poster_id']}>"),
+        "awaiting_confirm": c.t("jobs.status_awaiting"),
         "needs_mod": c.t("jobs.status_needs_mod"),
         "completed": c.t("jobs.status_done", helper=helper),
         "cancelled": c.t("jobs.status_cancelled"),
@@ -81,9 +81,9 @@ def job_view(app: "App", job) -> discord.ui.View | None:
     buttons = {
         "open": [attempt, cancel, flag],
         "accepted": [attempt, ("complete", c.t("jobs.btn_complete"), discord.ButtonStyle.success), cancel, flag],
-        # pending completion: the poster decides; others can still join after a heads-up
-        "awaiting_confirm": [("confirm", c.t("jobs.btn_confirm"), discord.ButtonStyle.success),
-                             ("notdone", c.t("jobs.btn_notdone"), discord.ButtonStyle.danger),
+        # pending completion: the poster reviews who finished, in order; others can still finish and mark it too
+        "awaiting_confirm": [("review", c.t("jobs.btn_review"), discord.ButtonStyle.success),
+                             ("complete", c.t("jobs.btn_complete"), discord.ButtonStyle.success),
                              attempt, cancel, flag],
     }.get(job["status"])
     if not buttons:
@@ -109,6 +109,12 @@ def review_embed(app: "App", job, *, decided: str | None = None, heading: str = 
     reasons = json.loads(job["flag_reasons"] or "[]")
     e.add_field(name="Why it's here", value="\n".join(f"• {r}" for r in reasons) or "flagged by a member",
                 inline=False)
+    if job["status"] in ("awaiting_confirm", "needs_mod") or decided:
+        rows = JobService(app.conn, app.cfg, app.engine).completions(job["id"])
+        if rows:
+            e.add_field(name="Marked complete (fastest first)", inline=False, value="\n".join(
+                f"{n}. <@{r['user_id']}>" + (" (turned down by poster)" if r["rejected_at"] else "")
+                for n, r in enumerate(rows, 1))[:1024])
     if decided:
         e.add_field(name="Decision", value=decided, inline=False)
     return e
@@ -177,7 +183,7 @@ class BoardPanel(discord.ui.View):
 
 
 class JobButton(discord.ui.DynamicItem[discord.ui.Button],
-                template=r"arcbot:job:(?P<action>accept|join|cancel|complete|confirm|notdone|vouch|flag):(?P<id>\d+)"):
+                template=r"arcbot:job:(?P<action>accept|join|cancel|complete|review|confirm|notdone|vouch|flag):(?P<id>\d+)"):
     def __init__(self, action: str, job_id: int, *, label: str = "…", style=discord.ButtonStyle.secondary):
         super().__init__(discord.ui.Button(label=label, style=style, custom_id=f"arcbot:job:{action}:{job_id}"))
         self.action, self.job_id = action, job_id
@@ -214,6 +220,56 @@ class JobReviewButton(discord.ui.DynamicItem[discord.ui.Button],
             return
         cog: Jobs = interaction.client.get_cog("Jobs")  # type: ignore[assignment]
         await getattr(cog, f"review_{self.action}")(interaction, self.job_id)
+
+
+def completion_order_text(app: "App", rows) -> str:
+    """The poster's view of who marked the job complete, fastest first."""
+    c = app.copy
+    lines = []
+    for n, r in enumerate(rows, 1):
+        ts = int(datetime.fromisoformat(r["claimed_at"]).timestamp())
+        line = c.t("jobs.order_line", n=_ordinal(n), who=f"<@{r['user_id']}>", when=f"<t:{ts}:R>")
+        lines.append(f"~~{line}~~ {c.t('jobs.order_turned_down')}" if r["rejected_at"] else line)
+    return c.t("jobs.order_heading") + "\n" + "\n".join(lines)
+
+
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+class CompletionReview(discord.ui.View):
+    """Ephemeral, poster only: pick who really completed it from the completion order, or turn one down."""
+
+    def __init__(self, cog: "Jobs", job_id: int, pending: list[tuple[int, str]]):
+        super().__init__(timeout=10 * 60)
+        c = cog.app.copy
+        self.cog, self.job_id = cog, job_id
+        order = {uid: n for n, (uid, _) in enumerate(pending)}
+        self.pick = discord.ui.Select(placeholder=c.t("jobs.review_pick"), options=[
+            discord.SelectOption(label=f"{name}"[:100], value=str(uid), default=order[uid] == 0)
+            for uid, name in pending])
+        self.pick.callback = self._noop
+        self.add_item(self.pick)
+        ok = discord.ui.Button(label=c.t("jobs.btn_confirm"), style=discord.ButtonStyle.success)
+        ok.callback = self._confirm
+        no = discord.ui.Button(label=c.t("jobs.btn_notdone"), style=discord.ButtonStyle.danger)
+        no.callback = self._reject
+        self.add_item(ok)
+        self.add_item(no)
+        self.default = pending[0][0] if pending else None
+
+    def chosen(self) -> int | None:
+        return int(self.pick.values[0]) if self.pick.values else self.default
+
+    async def _noop(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        await self.cog.confirm_completion(interaction, self.job_id, self.chosen())
+
+    async def _reject(self, interaction: discord.Interaction) -> None:
+        await self.cog.reject_completion(interaction, self.job_id, self.chosen())
 
 
 class TierSelectView(discord.ui.View):
@@ -558,8 +614,8 @@ class Jobs(commands.Cog):
         job = self.service.mark_complete(job_id, uid)
         if job is None:
             job = self.service.get(job_id)
-            if job is not None and job["status"] == "awaiting_confirm":
-                msg = c.t("jobs.already_claimed", helper=f"<@{job['helper_id']}>")
+            if job is not None and uid in self.service.pending_completions(job_id):
+                msg = c.t("jobs.already_marked")
             elif job is not None and job["poster_id"] == uid:
                 msg = c.t("jobs.poster_waits")
             elif job is not None and job["status"] in JobService.JOINABLE:
@@ -573,39 +629,66 @@ class Jobs(commands.Cog):
         await self._refresh(job)
         await self._say(job, c.t("jobs.awaiting_confirm", poster=f"<@{job['poster_id']}>", requester=f"<@{uid}>"),
                         [job["poster_id"]], view=_buttons(job_id, [
-                            ("confirm", c.t("jobs.btn_confirm"), discord.ButtonStyle.success),
-                            ("notdone", c.t("jobs.btn_notdone"), discord.ButtonStyle.danger)]))
+                            ("review", c.t("jobs.btn_review"), discord.ButtonStyle.success)]))
 
-    async def on_confirm(self, interaction: discord.Interaction, job_id: int) -> None:
+    async def on_review(self, interaction: discord.Interaction, job_id: int) -> None:
+        """Poster only: the completion order (1st, 2nd, 3rd...) with confirm / not done for each."""
         app, c = self.app, self.app.copy
-        job, award = self.service.confirm(job_id, interaction.user.id)
+        job = self.service.get(job_id)
+        if job is None or job["status"] != "awaiting_confirm":
+            await interaction.response.send_message(c.t("jobs.taken"), ephemeral=True)
+            return
+        if interaction.user.id != job["poster_id"]:
+            await interaction.response.send_message(c.t("jobs.only_poster"), ephemeral=True)
+            return
+        content, view = await self._review_panel(job_id)
+        await interaction.response.send_message(content, view=view, ephemeral=True)
+
+    # buttons on older messages
+    on_confirm = on_review
+    on_notdone = on_review
+
+    async def _review_panel(self, job_id: int) -> tuple[str, CompletionReview | None]:
+        app = self.app
+        rows = self.service.completions(job_id)
+        pending = []
+        for n, r in enumerate(rows, 1):
+            if r["rejected_at"] is None:
+                m = await app.member(r["user_id"])
+                pending.append((r["user_id"], f"{_ordinal(n)}: {m.display_name if m else r['user_id']}"))
+        return completion_order_text(app, rows), (CompletionReview(self, job_id, pending) if pending else None)
+
+    async def confirm_completion(self, interaction: discord.Interaction, job_id: int, user_id: int | None) -> None:
+        app, c = self.app, self.app.copy
+        job, award = self.service.confirm(job_id, interaction.user.id, user_id)
         if award is None:
             waiting = job is not None and job["status"] == "awaiting_confirm"
-            msg = c.t("jobs.only_poster") if waiting else c.t("jobs.taken")
+            msg = c.t("jobs.only_poster") if waiting and interaction.user.id != job["poster_id"] else c.t("jobs.taken")
             await interaction.response.send_message(msg, ephemeral=True)
             return
         log.info("job %s confirmed: helper %s awarded %s (cap %s)", job_id, job["helper_id"], award.points, award.capped)
-        await interaction.response.send_message(c.t("jobs.completed", helper=f"<@{job['helper_id']}>"),
-                                                ephemeral=True)
+        await interaction.response.edit_message(content=c.t("jobs.completed", helper=f"<@{job['helper_id']}>"),
+                                                view=None)
         await self._refresh(job)
         if award.change is not None:
             await app.apply_change(award.change, await app.member(job["helper_id"]))
         await self._after_completion(job)
 
-    async def on_notdone(self, interaction: discord.Interaction, job_id: int) -> None:
+    async def reject_completion(self, interaction: discord.Interaction, job_id: int, user_id: int | None) -> None:
         c = self.app.copy
-        job, claimer = self.service.reject_completion(job_id, interaction.user.id)
+        job, turned_down = self.service.reject_completion(job_id, interaction.user.id, user_id)
         if job is None:
-            current = self.service.get(job_id)
-            waiting = current is not None and current["status"] == "awaiting_confirm"
-            await interaction.response.send_message(c.t("jobs.only_poster") if waiting else c.t("jobs.taken"),
-                                                    ephemeral=True)
+            await interaction.response.send_message(c.t("jobs.taken"), ephemeral=True)
             return
-        log.info("job %s: poster sent %s's completion back", job_id, claimer)
-        await interaction.response.send_message(c.t("jobs.sent_back"), ephemeral=True)
+        log.info("job %s: poster turned down %s's completion", job_id, turned_down)
+        if job["status"] == "awaiting_confirm":  # someone else is next in line: show the updated order
+            content, view = await self._review_panel(job_id)
+            await interaction.response.edit_message(content=content, view=view)
+        else:
+            await interaction.response.edit_message(content=c.t("jobs.sent_back"), view=None)
         await self._refresh(job)
-        await self._say(job, c.t("jobs.not_done_yet", helper=f"<@{claimer}>", poster=f"<@{job['poster_id']}>"),
-                        [claimer])
+        await self._say(job, c.t("jobs.not_done_yet", helper=f"<@{turned_down}>", poster=f"<@{job['poster_id']}>"),
+                        [turned_down])
 
     async def on_vouch(self, interaction: discord.Interaction, job_id: int) -> None:
         """The poster's "Vouch for <helper>" button after completion: opens the usual vouch form."""

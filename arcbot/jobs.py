@@ -1,9 +1,11 @@
 """Job board rules: listing checks, routing, attempt gating, completion awards with caps, expiry. No Discord.
 
-Lifecycle: open -> accepted (one or more raiders attempting; more can still join) -> awaiting_confirm (the first
-attempter to tap "Mark complete" claims it; the board shows "pending completion") -> completed (poster confirmed,
-claimer rewarded). The poster can send a pending completion back with "Not done yet". After completion the private
-thread stays up until the poster vouches for the claimer (or vouch_wait_days pass).
+Lifecycle: open -> accepted (one or more raiders attempting; more can still join) -> awaiting_confirm (at least one
+attempter tapped "Mark complete"; the board shows "Pending Completion" and others can still finish and mark it too)
+-> completed (the poster picked who really did it from the completion order, and that raider is rewarded).
+helper_id is the earliest completion the poster hasn't turned down. If the first raider to mark it hadn't really
+finished, the poster turns that one down and the next in line becomes the fastest successful completion.
+After completion the private thread stays up until the poster vouches for the helper (or vouch_wait_days pass).
 """
 from __future__ import annotations
 
@@ -261,32 +263,70 @@ class JobService:
         return self._transition(job_id, ("open", "accepted", "awaiting_confirm", "pending_review"), "cancelled",
                                 closed_at=iso(now or utcnow()))
 
-    def mark_complete(self, job_id: int, by: int, now: datetime | None = None) -> sqlite3.Row | None:
-        """An attempter says it's done. The first one claims it; the poster confirms."""
-        with transaction(self.conn):
-            if not self.is_attempting(job_id, by):
-                return None
-            return self._transition(job_id, ("accepted",), "awaiting_confirm", helper_id=by,
-                                    completion_requested_by=by, completion_requested_at=iso(now or utcnow()))
+    def completions(self, job_id: int) -> list[sqlite3.Row]:
+        """Everyone who marked this job complete, fastest first (turned-down ones included, with rejected_at)."""
+        return self.conn.execute("SELECT * FROM job_completions WHERE job_id = ? ORDER BY claimed_at, rowid",
+                                 (job_id,)).fetchall()
 
-    def reject_completion(self, job_id: int, by: int) -> tuple[sqlite3.Row | None, int | None]:
-        """The poster says it isn't done: back to attempting, anyone can claim it again. Returns (job, old claimer)."""
+    def pending_completions(self, job_id: int) -> list[int]:
+        return [r["user_id"] for r in self.completions(job_id) if r["rejected_at"] is None]
+
+    def mark_complete(self, job_id: int, by: int, now: datetime | None = None) -> sqlite3.Row | None:
+        """An attempter says they finished it. Everyone who does is queued in order; the poster picks."""
+        now = now or utcnow()
+        with transaction(self.conn):
+            job = self.get(job_id)
+            if (job is None or job["status"] not in ("accepted", "awaiting_confirm")
+                    or not self.is_attempting(job_id, by)):
+                return None
+            if by in self.pending_completions(job_id):
+                return None  # already in line
+            # a raider the poster turned down can mark it again once they've really finished: back of the line
+            self.conn.execute("INSERT INTO job_completions(job_id, user_id, claimed_at) VALUES(?,?,?)"
+                              " ON CONFLICT(job_id, user_id) DO UPDATE SET claimed_at = excluded.claimed_at,"
+                              " rejected_at = NULL", (job_id, by, iso(now)))
+            if job["status"] == "accepted":
+                self._transition(job_id, ("accepted",), "awaiting_confirm", helper_id=by,
+                                 completion_requested_by=by, completion_requested_at=iso(now))
+            return self.get(job_id)
+
+    def reject_completion(self, job_id: int, by: int, user_id: int | None = None,
+                          now: datetime | None = None) -> tuple[sqlite3.Row | None, int | None]:
+        """The poster says user_id (default: the earliest pending) didn't really finish it. The next one in line
+        moves up; with nobody left it's back to attempting. Returns (job, the turned-down raider)."""
+        now = now or utcnow()
         with transaction(self.conn):
             job = self.get(job_id)
             if job is None or job["poster_id"] != by or job["status"] != "awaiting_confirm":
                 return None, None
-            claimer = job["helper_id"]
+            pending = self.pending_completions(job_id)
+            target = user_id if user_id is not None else (pending[0] if pending else None)
+            if target not in pending:
+                return None, None
+            self.conn.execute("UPDATE job_completions SET rejected_at = ? WHERE job_id = ? AND user_id = ?",
+                              (iso(now), job_id, target))
+            rest = [u for u in pending if u != target]
+            if rest:
+                self.conn.execute("UPDATE jobs SET helper_id = ? WHERE id = ?", (rest[0], job_id))
+                return self.get(job_id), target
             row = self._transition(job_id, ("awaiting_confirm",), "accepted", helper_id=None,
                                    completion_requested_by=None, completion_requested_at=None)
-            return row, claimer
+            return row, target
 
-    def confirm(self, job_id: int, by: int, now: datetime | None = None) -> tuple[sqlite3.Row | None, Award | None]:
-        """The poster confirms the pending completion; the raider who claimed it is rewarded."""
+    def confirm(self, job_id: int, by: int, user_id: int | None = None,
+                now: datetime | None = None) -> tuple[sqlite3.Row | None, Award | None]:
+        """The poster confirms who really completed it (default: the earliest pending); that raider is rewarded."""
         now = now or utcnow()
         with transaction(self.conn):
             job = self.get(job_id)
             if job is None or job["status"] != "awaiting_confirm" or by != job["poster_id"]:
                 return job, None
+            pending = self.pending_completions(job_id)
+            helper = user_id if user_id is not None else (pending[0] if pending else job["helper_id"])
+            if pending and helper not in pending:
+                return job, None
+            self.conn.execute("UPDATE jobs SET helper_id = ? WHERE id = ?", (helper, job_id))
+            job = self.get(job_id)
             award = self._award(job, now)
             self.conn.execute("UPDATE jobs SET status = 'completed', closed_at = ?, awarded_points = ? WHERE id = ?",
                               (iso(now), award.points, job_id))

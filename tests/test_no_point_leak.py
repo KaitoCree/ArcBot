@@ -164,26 +164,35 @@ async def test_player_flows_never_show_points(world):
     await act(5, jobs.on_accept, job["id"], message=FakeMessage(app.channel("job_board")))
     thread = gw.threads[-1]
     assert jobs.service.get(job["id"])["thread_id"] == thread.id and sorted(thread.members) == [2, 3, 5]
-    it = await act(2, jobs.on_complete, job["id"])  # the poster confirms, never claims
-    assert any("can confirm it" in r for r in it.replies)
+    it = await act(2, jobs.on_complete, job["id"])  # the poster reviews, never claims
+    assert any("review it here" in r for r in it.replies)
     await act(5, jobs.on_complete, job["id"])
-    it = await act(3, jobs.on_complete, job["id"])  # 5 got there first
-    assert any("already marked this one done" in r for r in it.replies)
-    assert any("Pending completion" in t for t in gw.player_visible)
+    it = await act(5, jobs.on_complete, job["id"])
+    assert any("already marked" in r for r in it.replies)
+    await act(3, jobs.on_complete, job["id"])  # others can still finish and mark it too
+    assert [r["user_id"] for r in jobs.service.completions(job["id"])] == [5, 3]
+    assert any("Pending Completion" in t for t in gw.player_visible)
     app.engine.place(9, "green_horn")
-    it = await act(9, jobs.on_accept, job["id"])  # heads-up before joining a job that may already be done
+    it = await act(9, jobs.on_accept, job["id"])  # heads-up before joining a job that's pending completion
     assert any("Heads up" in r for r in it.replies) and 9 not in jobs.service.attempters(job["id"])
     await act(9, jobs.on_join, job["id"])
     assert 9 in thread.members
-    it = await act(5, jobs.on_confirm, job["id"])
+    it = await act(5, jobs.on_review, job["id"])
     assert any("Only the raider who posted" in r for r in it.replies)
-    await act(2, jobs.on_confirm, job["id"])
+    it = await act(2, jobs.on_review, job["id"])  # the poster sees the order
+    order = it.replies[-1]
+    assert order.index("1st") < order.index("<@5>") < order.index("2nd") < order.index("<@3>")
+    # 5 hadn't really finished: turned down, 3 moves up and is confirmed as the fastest successful completion
+    it = await act(2, jobs.reject_completion, job["id"], 5)
+    assert "(not done)" in it.replies[-1]
+    assert jobs.service.get(job["id"])["helper_id"] == 3
+    await act(2, jobs.confirm_completion, job["id"], None)
     done = jobs.service.get(job["id"])
-    assert done["status"] == "completed" and done["helper_id"] == 5
+    assert done["status"] == "completed" and done["helper_id"] == 3
     assert any(t is thread and "vouch" in text for t, text in gw.sent)
     await jobs.housekeeping()
     assert not thread.closed  # waits for the poster's vouch
-    await act(2, bot.get_cog("Vouch").guided_vouch, await app.member(5), "Cleared the whole Spaceport chain with me")
+    await act(2, bot.get_cog("Vouch").guided_vouch, await app.member(3), "Cleared the whole Spaceport chain with me")
     assert thread.closed and jobs.service.get(job["id"])["thread_closed_at"]
     # Guild Master boost: only offered to the Guild Master, and only honoured for them
     import arcbot.cogs.jobs as cj
@@ -222,10 +231,10 @@ async def test_player_flows_never_show_points(world):
     # attempter marks done and the poster sends it back once, then confirms; ineligible accept wording
     await act(5, jobs.on_accept, soft["id"], message=FakeMessage(app.channel("job_board")))
     await act(5, jobs.on_complete, soft["id"])
-    await act(3, jobs.on_notdone, soft["id"])
+    await act(3, jobs.reject_completion, soft["id"], None)
     assert jobs.service.get(soft["id"])["status"] == "accepted"
     await act(5, jobs.on_complete, soft["id"])
-    await act(3, jobs.on_confirm, soft["id"])
+    await act(3, jobs.confirm_completion, soft["id"], 5)
     assert jobs.service.get(soft["id"])["status"] == "completed"
     vet_job, _, _ = jobs.service.create(4, "Veteran run", "Hard Matriarch kill, Veterans only please.", "veterans_only",
                                         has_image=False)

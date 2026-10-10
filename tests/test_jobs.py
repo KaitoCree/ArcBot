@@ -148,23 +148,53 @@ def test_only_helper_earns_points(svc, engine):
     assert engine.get_user(1)["points"] == before_poster
 
 
-def test_first_to_mark_complete_gets_the_reward(svc, engine):
+def test_completion_order_and_fastest_confirmed_gets_the_reward(svc, engine):
     job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    t0 = utcnow()
     for uid in (2, 3, 4):
         svc.accept(job_id, uid, helper_rank="pathfinder", days_in_guild=10)
     assert svc.mark_complete(job_id, 9) is None  # outsiders can't
-    assert svc.mark_complete(job_id, 1) is None  # the poster confirms, never claims
+    assert svc.mark_complete(job_id, 1) is None  # the poster reviews, never claims
     assert svc.confirm(job_id, 1)[1] is None  # nothing to confirm yet
-    row = svc.mark_complete(job_id, 3)
+    row = svc.mark_complete(job_id, 3, now=t0)
     assert row["status"] == "awaiting_confirm" and row["helper_id"] == 3
-    assert svc.mark_complete(job_id, 2) is None  # 3 got there first
-    assert svc.confirm(job_id, 3)[1] is None  # the claimer can't confirm their own "done"
-    assert svc.confirm(job_id, 2)[1] is None
+    assert svc.mark_complete(job_id, 3) is None  # already in line
+    assert svc.mark_complete(job_id, 2, now=t0 + timedelta(minutes=5))["helper_id"] == 3  # 3 is still fastest
+    svc.mark_complete(job_id, 4, now=t0 + timedelta(minutes=9))
+    assert [r["user_id"] for r in svc.completions(job_id)] == [3, 2, 4]
+    assert svc.confirm(job_id, 3)[1] is None and svc.confirm(job_id, 2)[1] is None  # only the poster confirms
+    # 3 hadn't really finished: the poster turns them down and 2 becomes the fastest successful completion
+    row, turned_down = svc.reject_completion(job_id, 1, 3)
+    assert turned_down == 3 and row["status"] == "awaiting_confirm" and row["helper_id"] == 2
+    assert svc.pending_completions(job_id) == [2, 4]
+    assert svc.confirm(job_id, 1, 3)[1] is None  # a turned-down raider can't be confirmed
     before = {u: engine.get_user(u)["points"] for u in (2, 3, 4)}
-    row, award = svc.confirm(job_id, 1)
-    assert row["status"] == "completed" and award.points == 2
-    assert engine.get_user(3)["points"] == before[3] + 2
-    assert engine.get_user(2)["points"] == before[2] and engine.get_user(4)["points"] == before[4]
+    row, award = svc.confirm(job_id, 1)  # default: the earliest one still in line
+    assert row["status"] == "completed" and row["helper_id"] == 2 and award.points == 2
+    assert engine.get_user(2)["points"] == before[2] + 2
+    assert engine.get_user(3)["points"] == before[3] and engine.get_user(4)["points"] == before[4]
+
+
+def test_poster_can_confirm_someone_further_down(svc, engine):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    for uid in (2, 3):
+        svc.accept(job_id, uid, helper_rank="pathfinder", days_in_guild=10)
+    for uid in (2, 3):
+        svc.mark_complete(job_id, uid)
+    row, award = svc.confirm(job_id, 1, 3)
+    assert row["helper_id"] == 3 and award.points == 2
+
+
+def test_turned_down_raider_can_mark_again_at_the_back(svc):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    t0 = utcnow()
+    for uid in (2, 3):
+        svc.accept(job_id, uid, helper_rank="pathfinder", days_in_guild=10)
+    svc.mark_complete(job_id, 2, now=t0)
+    svc.mark_complete(job_id, 3, now=t0 + timedelta(minutes=1))
+    svc.reject_completion(job_id, 1, 2)
+    assert svc.mark_complete(job_id, 2, now=t0 + timedelta(minutes=2)) is not None
+    assert svc.pending_completions(job_id) == [3, 2]
 
 
 def test_joining_during_pending_completion_needs_a_heads_up(svc):
@@ -183,7 +213,7 @@ def test_poster_can_send_a_completion_back(svc, engine):
     svc.accept(job_id, 3, helper_rank="green_horn", days_in_guild=10)
     svc.mark_complete(job_id, 2)
     assert svc.reject_completion(job_id, 2) == (None, None)  # only the poster
-    row, claimer = svc.reject_completion(job_id, 1)
+    row, claimer = svc.reject_completion(job_id, 1)  # nobody else in line: open again
     assert claimer == 2 and row["status"] == "accepted" and row["helper_id"] is None
     assert svc.mark_complete(job_id, 3)["helper_id"] == 3  # someone else can claim it now
     before = engine.get_user(3)["points"]

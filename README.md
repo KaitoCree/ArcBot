@@ -39,9 +39,11 @@ itself: restarts on crash, nightly backups, self-checks on startup.
   trading, account selling, paid carries, cheats, scams), a profanity filter, links and posting-rate caps.
   Serious hits wait for a mod; softer trade words post immediately with a heads-up to mods.
 - Several raiders can tap *I'm attempting* on one job; each is added to the job's private thread with the poster.
-  The first to tap *Mark complete* claims it, and the board shows *Pending completion* so others can decide
-  whether it's still worth their time (joining then asks for a confirm). The poster confirms (or sends it back
-  with *Not done yet*); only the raider who claimed it earns points (with caps).
+  Once someone taps *Mark complete* the board shows *⏳ Pending Completion* so others can decide whether it's
+  still worth their time (joining then asks for a confirm). Others can still finish and mark it too.
+- The poster's *Review completions* shows everyone who marked it complete, fastest first (1st, 2nd, 3rd...).
+  They confirm who really did it; turning down the 1st moves the 2nd up, so the fastest *successful* completion
+  gets the credit. Only that raider earns points (with caps).
 - After completion the thread stays up until the poster vouches for that raider (a button in the thread opens the
   vouch form; any vouch in #vouch counts too), or `vouch_wait_days` pass. Then it's deleted (or archived).
 - Guild Master only: the Post a job form has a *Reward boost* pick (`points.job_xp_boosts`) for special posts.
