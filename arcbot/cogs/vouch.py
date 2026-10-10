@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -50,12 +49,7 @@ class Vouch(commands.Cog):
     async def _record(self, message_id: int, voucher_id: int, recipients: list[int], text: str) -> None:
         for uid in [voucher_id, *recipients]:
             self.app.adopt_from_roles(await self.app.member(uid))
-        voucher = await self.app.member(voucher_id)
-        days = None
-        joined = getattr(voucher, "joined_at", None)
-        if joined is not None:
-            days = (datetime.now(timezone.utc) - joined).total_seconds() / 86400
-        for o in self.service.record(message_id, voucher_id, recipients, text, voucher_days_in_guild=days):
+        for o in self.service.record(message_id, voucher_id, recipients, text):
             log.info("vouch %s -> %s counted=%s reason=%s", voucher_id, o.recipient_id, o.counted, o.reason)
             if o.change:
                 await self.app.apply_change(o.change, await self.app.member(o.recipient_id))

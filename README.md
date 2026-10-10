@@ -47,12 +47,15 @@ itself: restarts on crash, nightly backups, self-checks on startup.
 - After completion the thread stays up until the poster vouches for that raider (a button in the thread opens the
   vouch form; any vouch in #vouch counts too), or `vouch_wait_days` pass. Then it's deleted (or archived).
 - Guild Master only: the posting form's special pick can post a *Challenge* (`points.job_challenges`). It stays
-  open until the Guild Master closes it. Anyone eligible (the Guild Master too) taps *Form squad* and invites up
-  to 2 teammates, who must accept. After the raid every member uploads their post-raid summary screenshot; the
-  first upload locks the squad. The Guild Master gets all screenshots in #mod-review with automatic flags (uploads
-  far apart, duplicate files, members already rewarded) and approves or rejects. Every approved squad member gets
-  the same reward, the first approved squad gets a first-clear bonus, and each raider is rewarded once per
-  challenge. Approved squads are listed in the post's *Hall of Clears*.
+  open until the Guild Master closes it. Anyone eligible (the Guild Master too) taps *I'm attempting*, which opens
+  a private squad thread, and adds up to 2 squad members, who must accept. After the raid at least one member
+  uploads a post-raid summary screenshot (the first upload locks the squad) and taps *Send for review*; it goes
+  automatically once everyone has uploaded. The Guild Master gets the screenshots in #mod-review with automatic
+  flags (uploads far apart, duplicate files, members already rewarded) and approves or rejects; members hear the
+  result by DM and the squad thread is deleted. Every approved squad member gets the same reward, the first approved
+  squad gets a first-clear bonus, and each raider is rewarded once per challenge. Approved squads are listed in the
+  post's *Hall of Clears*. Closing the challenge posts "@raiders completed 'Job name'" on the board (a squad
+  approved after that gets its own post).
 - Guild Master only: the Post a job form has a *Reward boost* pick (`points.job_xp_boosts`) for special posts.
   Nobody else sees it. The board marks the post as a special job without showing any numbers.
 - Check-ins on day 3 and 10; confirmations that stall go to mods instead of expiring.

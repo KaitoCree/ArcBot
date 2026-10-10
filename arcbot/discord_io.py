@@ -136,8 +136,8 @@ class Gateway:
         except discord.HTTPException as exc:
             log.warning("could not react on %s: %s", message.id, exc)
 
-    async def dm(self, user: discord.abc.User, content: str) -> bool:
-        self._guard(content, [], ())
+    async def dm(self, user: discord.abc.User, content: str, *, user_texts: Iterable[str] = ()) -> bool:
+        self._guard(content, [], user_texts)
         if self.dry_run:
             log.info("[dry-run] DM %s: %s", user.id, content)
             return True

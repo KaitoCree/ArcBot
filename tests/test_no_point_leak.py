@@ -219,7 +219,7 @@ async def test_player_flows_never_show_points(world):
     chal = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
     assert chal["kind"] == "challenge" and any("Hall of Clears" in t for t in gw.player_visible)
     it = await act(3, jobs.on_accept, chal["id"])
-    assert any("Form squad" in r for r in it.replies)
+    assert any("I'm attempting" in r for r in it.replies)
     await act(3, ch.on_form, chal["id"])
     sid = ch.service.active_squad_of(chal["id"], 3)["id"]
     sq_thread = app.bot_channel(ch.service.squad(sid)["thread_id"])
@@ -229,17 +229,22 @@ async def test_player_flows_never_show_points(world):
     await act(4, ch.squad_accept, sid)  # the Guild Master can squad up too
     it = await act(9, ch.squad_submit, sid)
     assert any("Only raiders in this squad" in r for r in it.replies)
-    for uid in (3, 5, 4):
-        await act(uid, ch.save_proof, sid, [FakeAttachment(f"summary {uid}".encode())])
+    await act(5, ch.save_proof, sid, [FakeAttachment(b"summary 5")])  # one screenshot is enough
+    assert ch.service.squad(sid)["status"] == "submitting"
+    await act(4, ch.squad_review, sid)
     assert ch.service.squad(sid)["status"] == "in_review"
+    assert any("No screenshot from: <@3> <@4>" in t for t in gw.mod_visible)
     assert any("Challenge clear to review" in t for t in gw.mod_visible)
     before = {u: app.engine.get_user(u)["points"] for u in (3, 4, 5)}
     await ch.decide(FakeInteraction(bot, await app.member(4), message=FakeMessage()), sid, approve=True)
     app.is_guild_master = real_gm  # type: ignore[method-assign]
     assert all(app.engine.get_user(u)["points"] > before[u] for u in (3, 4, 5))
     assert len({app.engine.get_user(u)["points"] - before[u] for u in (3, 4, 5)}) == 1  # everyone equal
-    assert any("FIRST CLEAR" in t for t in gw.player_visible) and sq_thread.closed
+    assert sorted(u for u, t in gw.dms if "FIRST CLEAR" in t) == [3, 4, 5]
+    assert sq_thread.closed and sq_thread.deleted
     assert any("First clear: <@3> <@5> <@4>" in t for t in gw.player_visible)
+    await act(4, ch.on_close, chal["id"])
+    assert any(t == "<@3> <@5> <@4> completed 'Emperor extract'" for _, t in gw.sent)
     # job held for mods, then rejected
     await act(1, jobs.submit, "Cheap carry", "paid carry service, dm me now for a price", "anyone", [])
 

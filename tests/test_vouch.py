@@ -77,13 +77,6 @@ def test_near_miss(cfg):
     assert not is_near_miss("<@9> ty", [(9, True)], 1, cfg)
 
 
-def test_brand_new_member_vouch_does_not_count(svc, engine):
-    engine.place(40, "green_horn")  # e.g. a free-weekend account that pressed Skip
-    out = svc.record(700, 40, [2], TEXT, voucher_days_in_guild=0.5)
-    assert not out[0].counted and out[0].reason == "voucher_too_new"
-    assert svc.record(701, 40, [3], TEXT, voucher_days_in_guild=3.5)[0].counted
-
-
 def test_newcomer_cannot_vouch(svc, engine):
     out = svc.record(300, 50, [2], TEXT)  # user 50 has no record / not placed
     assert not out[0].counted and out[0].reason == "voucher_unplaced"

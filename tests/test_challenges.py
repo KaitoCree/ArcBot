@@ -112,6 +112,35 @@ def test_first_screenshot_locks_the_roster(world):
     assert ch.submit_proof(sid, 3, None, "c")[2] == "locked"
 
 
+def test_one_screenshot_is_enough_to_send_for_review(world, engine):
+    ch, _, job_id = world
+    sid = _squad(ch, job_id, 2, [3, 4])
+    assert ch.request_review(sid, 2)[1] == "no_proof"
+    ch.submit_proof(sid, 3, None, "only-one")
+    assert ch.request_review(sid, 9)[1] == "not_member"
+    sq, reason = ch.request_review(sid, 4)  # any member can send it, not only the uploader
+    assert reason is None and sq["status"] == "in_review"
+    assert ch.request_review(sid, 2)[1] == "locked"
+    _, awards, _ = ch.decide(sid, True, by=1)
+    assert {a.user_id for a in awards} == {2, 3, 4}  # the whole squad is rewarded
+
+
+def test_completers_lists_every_cleared_raider_once(world):
+    ch, _, job_id = world
+    first = _squad(ch, job_id, 2, [3])
+    _proofs(ch, first, [2])
+    ch.request_review(first, 2)
+    ch.decide(first, True, by=1)
+    second = _squad(ch, job_id, 5, [2, 6])
+    _proofs(ch, second, [5])
+    ch.request_review(second, 5)
+    ch.decide(second, True, by=1)
+    rejected = _squad(ch, job_id, 7, [])
+    _proofs(ch, rejected, [7])
+    ch.decide(rejected, False, by=1)
+    assert ch.completers(job_id) == [2, 3, 5, 6]
+
+
 def test_flags_for_late_or_duplicate_screenshots(world, cfg):
     ch, _, job_id = world
     sid = _squad(ch, job_id, 2, [3, 4])

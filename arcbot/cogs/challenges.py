@@ -1,4 +1,5 @@
-"""Challenge jobs on #job-board: Form squad, invites, Submit my extract, Guild Master review, Hall of Clears.
+"""Challenge jobs on #job-board: I'm attempting (starts a squad), invites, Submit my extract, Send for review,
+Guild Master review, Hall of Clears, and a "completed" post once the challenge is closed.
 
 Rules live in arcbot/challenges.py; the challenge post itself is a job row rendered by the Jobs cog.
 """
@@ -49,7 +50,7 @@ class ChallengeButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 class SquadButton(discord.ui.DynamicItem[discord.ui.Button],
-                  template=r"arcbot:csq:(?P<action>accept|decline|invite|submit|disband):(?P<id>\d+)"):
+                  template=r"arcbot:csq:(?P<action>accept|decline|invite|submit|review|disband):(?P<id>\d+)"):
     """In a squad's private thread."""
 
     def __init__(self, action: str, squad_id: int, *, label: str = "…", style=discord.ButtonStyle.secondary):
@@ -91,6 +92,7 @@ def squad_controls(app: "App", squad_id: int) -> discord.ui.View:
     c = app.copy
     v = discord.ui.View(timeout=None)
     for action, key, style in (("submit", "challenge.btn_submit", discord.ButtonStyle.success),
+                               ("review", "challenge.btn_send_review", discord.ButtonStyle.success),
                                ("invite", "challenge.btn_invite", discord.ButtonStyle.primary),
                                ("disband", "challenge.btn_disband", discord.ButtonStyle.secondary)):
         v.add_item(SquadButton(action, squad_id, label=c.t(key), style=style))
@@ -217,6 +219,17 @@ class Challenges(commands.Cog):
         log.info("challenge %s closed by %s", job_id, interaction.user.id)
         await interaction.response.send_message(c.t("challenge.closed_note"), ephemeral=True)
         await self._refresh_post(job_id)
+        await self._announce(job, self.service.completers(job_id))
+
+    async def _announce(self, job, users: list[int]) -> None:
+        """'@user completed "Job name"' on the job board, once the challenge is closed."""
+        ch = self.app.bot_channel(job["channel_id"]) or self.app.channel("job_board")
+        if ch is None or not users:
+            return
+        await self.app.gateway.send(ch, self.app.copy.t("challenge.completed_post", who=_mentions(users),
+                                                         title=job["title"]),
+                                    user_texts=[job["title"]],
+                                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(u) for u in users]))
 
     # ------------------------------------------------------------ squad thread
     async def squad_invite(self, interaction: discord.Interaction, squad_id: int) -> None:
@@ -329,13 +342,24 @@ class Challenges(commands.Cog):
             delete_image(replaced)
         log.info("squad %s: proof from %s (status %s)", squad_id, interaction.user.id, squad["status"])
         if squad["status"] != "in_review":
-            have = {p["user_id"] for p in self.service.proofs(squad_id)}
-            waiting = [u for u in self.service.members(squad_id) if u not in have]
-            await interaction.followup.send(c.t("challenge.proof_saved", waiting=_mentions(waiting)), ephemeral=True)
-            await self._say(squad, c.t("challenge.proof_saved", waiting=_mentions(waiting)), waiting)
+            await interaction.followup.send(c.t("challenge.proof_saved"), ephemeral=True)
+            await self._say(squad, c.t("challenge.proof_saved_thread", who=interaction.user.mention), [])
             return
         await interaction.followup.send(c.t("challenge.proof_all_in"), ephemeral=True)
         await self._say(squad, c.t("challenge.proof_all_in"), [])
+        await self.send_for_review(squad_id)
+
+    async def squad_review(self, interaction: discord.Interaction, squad_id: int) -> None:
+        c = self.app.copy
+        squad, reason = self.service.request_review(squad_id, interaction.user.id)
+        if reason:
+            msg = {"not_member": "challenge.not_member", "no_proof": "challenge.no_proof",
+                   "locked": "challenge.already_in_review"}[reason]
+            await interaction.response.send_message(c.t(msg), ephemeral=True)
+            return
+        log.info("squad %s: sent for review by %s", squad_id, interaction.user.id)
+        await interaction.response.send_message(c.t("challenge.review_sent"), ephemeral=True)
+        await self._say(squad, c.t("challenge.review_sent_thread", who=interaction.user.mention), [])
         await self.send_for_review(squad_id)
 
     # ------------------------------------------------------------ review
@@ -348,6 +372,8 @@ class Challenges(commands.Cog):
         if ch is None:
             return
         members = self.service.members(squad_id)
+        have = {p["user_id"] for p in self.service.proofs(squad_id)}
+        missing = [u for u in members if u not in have]
         first = not any(place == 1 for place, _ in self.service.hall(job["id"]))
         flags = self.service.flags(squad_id)
         lines = [f"🏆 **Challenge clear to review**: {job['title']} (job #{job['id']}, squad #{squad_id})",
@@ -357,6 +383,8 @@ class Challenges(commands.Cog):
         for p in self.service.proofs(squad_id):
             ts = int(datetime.fromisoformat(p["submitted_at"]).timestamp())
             lines.append(f"• <@{p['user_id']}> screenshot <t:{ts}:T>")
+        if missing:
+            lines.append(f"No screenshot from: {_mentions(missing)} (one is enough)")
         lines.append("⚠️ " + "\n⚠️ ".join(flags) if flags else "No automatic flags.")
         files = []
         for p in self.service.proofs(squad_id):
@@ -387,21 +415,29 @@ class Challenges(commands.Cog):
                        else f"❌ Rejected by {interaction.user.mention}")
             await app.gateway.edit(interaction.message, content=f"{interaction.message.content}\n{verdict}",
                                    view=None, mod_only=True, attachments=[])
+        job = app.conn.execute("SELECT * FROM jobs WHERE id = ?", (squad["job_id"],)).fetchone()
         if approve:
             key = "challenge.approved_first" if squad["place"] == 1 else "challenge.approved"
-            await self._say(squad, c.t(key, squad=_mentions(members)), members)
+        else:
+            key = "challenge.rejected"
+        for uid in members:  # the squad thread is deleted below, so the result goes by DM
+            user = await app.member(uid)
+            if user is not None:
+                await app.gateway.dm(user, c.t(key, title=job["title"]), user_texts=[job["title"]])
+        if approve:
             for a in awards:
                 if a.change is not None:
                     await app.apply_change(a.change, await app.member(a.user_id))
-        else:
-            await self._say(squad, c.t("challenge.rejected", squad=_mentions(members)), members)
         await self._close_thread(squad)
         await self._refresh_post(squad["job_id"])
+        if approve and job["status"] != "open":  # cleared after the challenge closed: post it on its own
+            await self._announce(job, members)
 
     async def _close_thread(self, squad) -> None:
         thread = await self._thread(squad)
-        if thread is not None:  # archived, not deleted: the squad keeps its history
-            await self.app.gateway.close_thread(thread, delete=False)
+        if thread is not None:  # deleted once decided (archived + locked if the bot can't delete it)
+            await self.app.gateway.close_thread(
+                thread, delete=bool(self.app.cfg.job_rules.get("delete_thread_when_done", True)))
 
 
 async def setup(bot: commands.Bot) -> None:

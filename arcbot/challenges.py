@@ -2,7 +2,8 @@
 
 A challenge is a job row with kind = 'challenge', posted by the Guild Master and open until they close it.
 Squad lifecycle: forming (leader invites; invitees accept or decline) -> submitting (first screenshot locks the
-roster; pending invites are cancelled) -> in_review (every accepted member uploaded) -> approved | rejected.
+roster; pending invites are cancelled) -> in_review (a member sends it for review, or every member has uploaded;
+one screenshot is enough) -> approved | rejected.
 A forming/submitting squad can be disbanded by its leader.
 
 Every member of an approved squad gets the same reward: the tier's points x the boost, plus first_clear_bonus for
@@ -70,6 +71,13 @@ class ChallengeService:
         rows = self.conn.execute("SELECT id, place FROM challenge_squads WHERE job_id = ? AND status = 'approved'"
                                  " ORDER BY place", (job_id,)).fetchall()
         return [(r["place"], self.members(r["id"])) for r in rows]
+
+    def completers(self, job_id: int) -> list[int]:
+        """Everyone in an approved squad, in clear order, each once."""
+        out: list[int] = []
+        for _, members in self.hall(job_id):
+            out += [u for u in members if u not in out]
+        return out
 
     def rewarded(self, job_id: int, user_id: int) -> bool:
         return self.conn.execute("SELECT 1 FROM job_rewards WHERE job_id = ? AND user_id = ?",
@@ -205,6 +213,22 @@ class ChallengeService:
                                   (iso(now), squad_id))
             replaced = old["image_path"] if old and old["image_path"] != image_path else None
             return self.squad(squad_id), replaced, None
+
+    def request_review(self, squad_id: int, user_id: int, now: datetime | None = None
+                       ) -> tuple[sqlite3.Row | None, str | None]:
+        """A member sends the squad's clear to the Guild Master once at least one screenshot is in."""
+        now = now or utcnow()
+        with transaction(self.conn):
+            sq = self.squad(squad_id)
+            if sq is None or user_id not in self.members(squad_id):
+                return sq, "not_member"
+            if sq["status"] == "forming":
+                return sq, "no_proof"
+            if sq["status"] != "submitting":
+                return sq, "locked"
+            self.conn.execute("UPDATE challenge_squads SET status = 'in_review', submitted_at = ? WHERE id = ?",
+                              (iso(now), squad_id))
+            return self.squad(squad_id), None
 
     def flags(self, squad_id: int) -> list[str]:
         """Things the Guild Master should look at before approving (never auto-rejects)."""
