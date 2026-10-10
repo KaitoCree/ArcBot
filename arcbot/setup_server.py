@@ -216,8 +216,8 @@ def plan_lockdown(cfg: Config, snap: Snapshot) -> list[Action]:
     acts: list[Action] = []
     setup = cfg.raw.get("setup", {}) or {}
     owned = {norm_channel(cfg.channels[k]) for k in OWNED}
-    bot_channels = {norm_channel(cfg.channels[k]) for k in ("vouch", "job_board", "event_timers",
-                                                            "rank_up_announcements")}
+    bot_channels = {norm_channel(cfg.channels[k]) for k in ("vouch", "job_board", "event_timers", "trials",
+                                                            "rank_up_announcements") if k in cfg.channels}
     newcomer_visible = {norm_channel(n) for n in setup.get("newcomer_visible", [])}
     mod_only = {norm_channel(n) for n in setup.get("mod_only", [])}
     ranked = [role(r.role) for r in cfg.ranks]

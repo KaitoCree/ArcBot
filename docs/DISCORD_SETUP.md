@@ -20,7 +20,7 @@ bot assign a role at or above its own, and a bot can't move its own role.
 ## Roles and channels
 - Role **Newcomer** (no permissions).
 - Channels **#apply**, **#rank-promotion**, **#mod-review** (private).
-- Existing channels the bot uses: **#vouch**, **#job-board**, **#event-timers**, and a chat channel for rank-up
+- Existing channels the bot uses: **#vouch**, **#job-board**, **#event-timers**, **#trials**, and a chat channel for rank-up
   announcements (`channels` in `config/arcbot.yaml`). Emoji or punctuation around a name is ignored, so
   `✅vouch` matches `vouch`.
 - Mod roles: `roles.mods` in the config (only these see mod commands and `#mod-review`).

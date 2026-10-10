@@ -26,6 +26,7 @@ FEATURE_CHANNELS = {
     "vouch": ["vouch"],
     "jobs": ["job_board", "mod_review"],
     "timers": ["event_timers"],
+    "trials": ["trials"],
 }
 
 # permissions the bot needs at guild level (docs/DISCORD_SETUP.md); pin/threads optional (job threads are private;
