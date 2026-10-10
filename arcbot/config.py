@@ -34,6 +34,12 @@ class JobTier:
     who: str = ""
 
 
+@dataclass(frozen=True)
+class XpBoost:
+    label: str
+    multiplier: float
+
+
 class Config:
     """Thin validated wrapper around the YAML dict. `raw` stays available for rarely used values."""
 
@@ -144,6 +150,21 @@ class Config:
         if len(self.job_tiers) > 25:
             errors.append("points.job_tiers can have at most 25 entries (Discord select limit)")
         self.job_rules: dict[str, Any] = dict(pts["job_rules"])
+        self.job_xp_boosts: list[XpBoost] = [
+            XpBoost(str(b["label"]), float(b["multiplier"])) for b in pts.get("job_xp_boosts") or []]
+        if not self.job_xp_boosts:
+            self.job_xp_boosts = [XpBoost("Standard reward", 1.0)]
+        if self.job_xp_boosts[0].multiplier != 1:
+            errors.append("points.job_xp_boosts must start with the multiplier 1 entry (the default)")
+        if any(b.multiplier < 1 or b.multiplier > 10 for b in self.job_xp_boosts):
+            errors.append("points.job_xp_boosts multipliers must be between 1 and 10")
+        if len(self.job_xp_boosts) > 25:
+            errors.append("points.job_xp_boosts can have at most 25 entries (Discord select limit)")
+        self.squad_max_size: int = int((pts.get("job_squads") or {}).get("max_size", 3))
+        if not 2 <= self.squad_max_size <= 26:
+            errors.append("points.job_squads.max_size must be 2..26")
+        if int(self.job_rules.get("max_attempters_per_job", 8)) < 1:
+            errors.append("points.job_rules.max_attempters_per_job must be >= 1")
 
         jc = r["job_listing_checks"]
         self.job_checks: dict[str, Any] = dict(jc)

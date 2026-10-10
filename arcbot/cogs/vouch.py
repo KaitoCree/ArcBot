@@ -59,6 +59,9 @@ class Vouch(commands.Cog):
             log.info("vouch %s -> %s counted=%s reason=%s", voucher_id, o.recipient_id, o.counted, o.reason)
             if o.change:
                 await self.app.apply_change(o.change, await self.app.member(o.recipient_id))
+        jobs = self.bot.get_cog("Jobs")
+        if jobs is not None:  # a poster vouching for whoever finished their job lets its thread close
+            await jobs.on_vouched(voucher_id, recipients)  # type: ignore[attr-defined]
 
     # -------------------------------------------------------- message vouch
     @commands.Cog.listener()

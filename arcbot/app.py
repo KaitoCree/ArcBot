@@ -28,10 +28,11 @@ FEATURE_CHANNELS = {
     "timers": ["event_timers"],
 }
 
-# permissions the bot needs at guild level (docs/DISCORD_SETUP.md); pin/threads optional
+# permissions the bot needs at guild level (docs/DISCORD_SETUP.md); pin/threads optional (job threads are private;
+# Manage Threads lets the bot delete a finished job's thread)
 REQUIRED_PERMS = ["view_channel", "send_messages", "send_messages_in_threads", "embed_links", "attach_files",
                   "read_message_history", "add_reactions", "manage_roles"]
-OPTIONAL_PERMS = ["create_public_threads", "manage_messages", "use_external_emojis"]
+OPTIONAL_PERMS = ["create_private_threads", "manage_threads", "manage_messages", "use_external_emojis"]
 
 
 @dataclass

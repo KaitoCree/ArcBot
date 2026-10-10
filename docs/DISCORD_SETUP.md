@@ -9,8 +9,9 @@
 Scopes: `bot`, `applications.commands`.
 
 Permissions (no Administrator): View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files,
-Read Message History, Add Reactions, Manage Roles, Create Public Threads (job threads), Pin Messages (button
-panels and the timer message; everything works unpinned).
+Read Message History, Add Reactions, Manage Roles, Create Private Threads (one private thread per job), Manage
+Threads (deletes a job's thread once it's done; without it the thread is archived and locked instead), Pin Messages
+(button panels and the timer message; everything works unpinned).
 
 ## Role order
 Drag the bot's role above Green Horn, Scavenger, Pathfinder, Vanguard, Veteran and Newcomer. Discord won't let a

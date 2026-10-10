@@ -107,8 +107,19 @@ def test_accept_gating(svc):
     assert svc.accept_block_reason(job, 9, helper_rank=None, days_in_guild=10) == "not_placed"
     row, reason = svc.accept(job_id, 2, helper_rank="pathfinder", days_in_guild=10)
     assert reason is None and row["status"] == "accepted"
+    assert svc.accept(job_id, 2, helper_rank="pathfinder", days_in_guild=10)[1] == "already"
     _, reason = svc.accept(job_id, 4, helper_rank="veteran", days_in_guild=10)
-    assert reason == "taken"
+    assert reason is None and svc.attempters(job_id) == [2, 4]  # several raiders attempt at once
+    svc.cancel(job_id, 1)
+    assert svc.accept(job_id, 3, helper_rank="vanguard", days_in_guild=10)[1] == "taken"
+
+
+def test_attempter_limit(svc, engine, conn):
+    job_id, _, _ = svc.create(1, "Big run", GOOD, "anyone", has_image=False)
+    cap = int(svc.rules["max_attempters_per_job"])
+    for uid in range(100, 100 + cap):
+        assert svc.accept(job_id, uid, helper_rank="green_horn", days_in_guild=10)[1] is None
+    assert svc.accept(job_id, 999, helper_rank="green_horn", days_in_guild=10)[1] == "full"
 
 
 def test_veterans_only_needs_veteran(svc):
@@ -124,8 +135,8 @@ def _complete(svc, poster, helper, tier="pathfinder_plus", title="Job", now=None
     if status != "open":
         svc.approve(job_id)
     svc.accept(job_id, helper, helper_rank="vanguard", days_in_guild=10, now=now)
-    svc.mark_complete(job_id, poster)
-    return job_id, svc.confirm(job_id, helper, now=now)
+    svc.mark_complete(job_id, helper, now=now)
+    return job_id, svc.confirm(job_id, poster, now=now)
 
 
 def test_only_helper_earns_points(svc, engine):
@@ -137,19 +148,130 @@ def test_only_helper_earns_points(svc, engine):
     assert engine.get_user(1)["points"] == before_poster
 
 
-def test_either_side_marks_done_the_other_confirms(svc, engine):
-    for starter, confirmer in ((1, 2), (2, 1)):
-        job_id, _, _ = svc.create(1, f"Job {starter}", GOOD + f" {starter}", "anyone", has_image=False)
-        svc.accept(job_id, 2, helper_rank="pathfinder", days_in_guild=10)
-        assert svc.confirm(job_id, confirmer)[1] is None  # nothing to confirm yet
-        assert svc.mark_complete(job_id, 3) is None  # outsiders can't
-        assert svc.mark_complete(job_id, starter)["completion_requested_by"] == starter
-        assert svc.confirm(job_id, starter)[1] is None  # can't confirm your own "done"
-        assert svc.confirm(job_id, 3)[1] is None
-        before = engine.get_user(2)["points"]
-        row, award = svc.confirm(job_id, confirmer)
-        assert row["status"] == "completed" and award.points == 2
-        assert engine.get_user(2)["points"] == before + 2  # helper earns, whoever confirmed
+def test_completion_order_and_fastest_confirmed_gets_the_reward(svc, engine):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    t0 = utcnow()
+    for uid in (2, 3, 4):
+        svc.accept(job_id, uid, helper_rank="pathfinder", days_in_guild=10)
+    assert svc.mark_complete(job_id, 9) is None  # outsiders can't
+    assert svc.mark_complete(job_id, 1) is None  # the poster reviews, never claims
+    assert svc.confirm(job_id, 1)[1] is None  # nothing to confirm yet
+    row = svc.mark_complete(job_id, 3, now=t0)
+    assert row["status"] == "awaiting_confirm" and row["helper_id"] == 3
+    assert svc.mark_complete(job_id, 3) is None  # already in line
+    assert svc.mark_complete(job_id, 2, now=t0 + timedelta(minutes=5))["helper_id"] == 3  # 3 is still fastest
+    svc.mark_complete(job_id, 4, now=t0 + timedelta(minutes=9))
+    assert [r["user_id"] for r in svc.completions(job_id)] == [3, 2, 4]
+    assert svc.confirm(job_id, 3)[1] is None and svc.confirm(job_id, 2)[1] is None  # only the poster confirms
+    # 3 hadn't really finished: the poster turns them down and 2 becomes the fastest successful completion
+    row, turned_down = svc.reject_completion(job_id, 1, 3)
+    assert turned_down == 3 and row["status"] == "awaiting_confirm" and row["helper_id"] == 2
+    assert svc.pending_completions(job_id) == [2, 4]
+    assert svc.confirm(job_id, 1, 3)[1] is None  # a turned-down raider can't be confirmed
+    before = {u: engine.get_user(u)["points"] for u in (2, 3, 4)}
+    row, award = svc.confirm(job_id, 1)  # default: the earliest one still in line
+    assert row["status"] == "completed" and row["helper_id"] == 2 and award.points == 2
+    assert engine.get_user(2)["points"] == before[2] + 2
+    assert engine.get_user(3)["points"] == before[3] and engine.get_user(4)["points"] == before[4]
+
+
+def test_poster_can_confirm_someone_further_down(svc, engine):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    for uid in (2, 3):
+        svc.accept(job_id, uid, helper_rank="pathfinder", days_in_guild=10)
+    for uid in (2, 3):
+        svc.mark_complete(job_id, uid)
+    row, award = svc.confirm(job_id, 1, 3)
+    assert row["helper_id"] == 3 and award.points == 2
+
+
+def test_turned_down_raider_can_mark_again_at_the_back(svc):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    t0 = utcnow()
+    for uid in (2, 3):
+        svc.accept(job_id, uid, helper_rank="pathfinder", days_in_guild=10)
+    svc.mark_complete(job_id, 2, now=t0)
+    svc.mark_complete(job_id, 3, now=t0 + timedelta(minutes=1))
+    svc.reject_completion(job_id, 1, 2)
+    assert svc.mark_complete(job_id, 2, now=t0 + timedelta(minutes=2)) is not None
+    assert svc.pending_completions(job_id) == [3, 2]
+
+
+def test_joining_during_pending_completion_needs_a_heads_up(svc):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    svc.accept(job_id, 2, helper_rank="pathfinder", days_in_guild=10)
+    svc.mark_complete(job_id, 2)
+    row, reason = svc.accept(job_id, 3, helper_rank="green_horn", days_in_guild=10)
+    assert reason == "pending" and row["helper_id"] == 2
+    assert svc.accept(job_id, 3, helper_rank="green_horn", days_in_guild=10, pending_ok=True)[1] is None
+    assert svc.attempters(job_id) == [2, 3] and svc.get(job_id)["status"] == "awaiting_confirm"
+
+
+def test_poster_can_send_a_completion_back(svc, engine):
+    job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
+    svc.accept(job_id, 2, helper_rank="pathfinder", days_in_guild=10)
+    svc.accept(job_id, 3, helper_rank="green_horn", days_in_guild=10)
+    svc.mark_complete(job_id, 2)
+    assert svc.reject_completion(job_id, 2) == (None, None)  # only the poster
+    row, claimer = svc.reject_completion(job_id, 1)  # nobody else in line: open again
+    assert claimer == 2 and row["status"] == "accepted" and row["helper_id"] is None
+    assert svc.mark_complete(job_id, 3)["helper_id"] == 3  # someone else can claim it now
+    before = engine.get_user(3)["points"]
+    assert svc.confirm(job_id, 1)[1].points == 2 and engine.get_user(3)["points"] == before + 2
+
+
+def test_thread_waits_for_the_posters_vouch(svc, conn):
+    job_id, (row, _) = _complete(svc, 1, 2)
+    svc.set_thread(job_id, 555)
+    other, _, _ = svc.create(1, "Other", GOOD + " other", "anyone", has_image=False)
+    svc.set_thread(other, 556)
+    svc.cancel(other, 1)
+    assert [r["id"] for r in svc.threads_to_close()] == [other]  # cancelled closes now; completed waits
+    svc.mark_thread_closed(other)
+    assert svc.note_vouch(3, [2]) == []  # someone else's vouch doesn't count
+    assert svc.note_vouch(1, [4]) == []  # nor a vouch for someone who didn't finish it
+    assert [r["id"] for r in svc.note_vouch(1, [2])] == [job_id]
+    assert [r["id"] for r in svc.threads_to_close()] == [job_id]
+    svc.mark_thread_closed(job_id)
+    assert svc.threads_to_close() == []
+
+
+def test_thread_closes_anyway_after_vouch_wait(svc):
+    job_id, _ = _complete(svc, 1, 2)
+    svc.set_thread(job_id, 555)
+    assert svc.threads_to_close() == []
+    later = utcnow() + timedelta(days=int(svc.rules["vouch_wait_days"]), minutes=1)
+    assert [r["id"] for r in svc.threads_to_close(now=later)] == [job_id]
+
+
+def test_guild_master_boost(svc, engine, cfg):
+    boosts = {b.multiplier for b in cfg.job_xp_boosts}
+    assert 1 in boosts and 2 in boosts
+    job_id, (row, award) = _complete_boosted(svc, 2.0)
+    assert award.points == 20 and row["xp_multiplier"] == 2  # pathfinder_plus base doubled
+    job_id, _, _ = svc.create(1, "Odd", GOOD + " odd", "anyone", has_image=False, xp_multiplier=7.5)
+    assert svc.get(job_id)["xp_multiplier"] == 1  # values not offered in config are ignored
+
+
+def test_boost_extra_rides_over_daily_cap(svc, engine, conn):
+    for p in range(20, 24):
+        engine.place(p, "scavenger")
+    pts = [_complete(svc, p, 2, tier="vanguard_plus", title=f"from {p}")[1][1].points for p in (20, 21)]
+    assert pts == [15, 15]
+    job_id, status, _ = svc.create(22, "Boosted", GOOD + " boosted", "vanguard_plus", has_image=False,
+                                   xp_multiplier=2.0)
+    svc.accept(job_id, 2, helper_rank="vanguard", days_in_guild=10)
+    svc.mark_complete(job_id, 2)
+    award = svc.confirm(job_id, 22)[1]
+    assert award.points == 10 + 15 and award.capped == "daily_cap"  # base trimmed to the cap, boost on top
+
+
+def _complete_boosted(svc, mult):
+    job_id, status, _ = svc.create(1, "Boosted", GOOD + " boosted", "pathfinder_plus", has_image=False,
+                                   xp_multiplier=mult)
+    svc.accept(job_id, 2, helper_rank="vanguard", days_in_guild=10)
+    svc.mark_complete(job_id, 2)
+    return job_id, svc.confirm(job_id, 1)
 
 
 def test_checkins_day_3_and_10(svc, conn):
@@ -190,7 +312,7 @@ def test_silent_confirmation_goes_to_mods_not_expiry(svc, engine):
 def test_mod_close_without_award(svc, engine):
     job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
     svc.accept(job_id, 2, helper_rank="pathfinder", days_in_guild=10)
-    svc.mark_complete(job_id, 1)
+    svc.mark_complete(job_id, 2)
     before = engine.get_user(2)["points"]
     row, award = svc.mod_resolve(job_id, award=False)
     assert row["status"] == "closed" and award.points == 0 and engine.get_user(2)["points"] == before
@@ -234,3 +356,72 @@ def test_cancel_only_by_poster(svc):
     job_id, _, _ = svc.create(1, "Job", GOOD, "anyone", has_image=False)
     assert svc.cancel(job_id, 2) is None
     assert svc.cancel(job_id, 1)["status"] == "cancelled"
+
+
+def _squad_job(svc, engine, tier="vanguard_plus", poster=4, squad=True):
+    for uid in (5, 6, 7):
+        engine.place(uid, "vanguard")
+    job_id, status, _ = svc.create(poster, "Squad run", GOOD + " squad", tier, has_image=False, squad=squad)
+    if status != "open":
+        svc.approve(job_id)
+    for uid in (2, 3):
+        svc.accept(job_id, uid, helper_rank="vanguard", days_in_guild=10)
+    return job_id
+
+
+V = ("vanguard", 10.0)
+
+
+def test_squad_is_rewarded_automatically(svc, engine):
+    job_id = _squad_job(svc, engine)
+    squad, skipped, block = svc.set_squad(job_id, 2, {5: V, 6: V})
+    assert block is None and squad == [5, 6] and skipped == {}
+    before = {u: engine.get_user(u)["points"] for u in (2, 5, 6, 3)}
+    svc.mark_complete(job_id, 2)
+    row, awards = svc.confirm_many(job_id, 4)
+    assert [(u, a.points) for u, a in awards] == [(2, 15), (5, 15), (6, 15)]  # everyone gets the full reward
+    assert row["status"] == "completed" and row["helper_id"] == 2 and row["reward_mode"] == "squad"
+    assert all(engine.get_user(u)["points"] == before[u] + 15 for u in (2, 5, 6))
+    assert engine.get_user(3)["points"] == before[3]
+    assert svc.winners(job_id) == [2, 5, 6]
+    assert [r["id"] for r in svc.note_vouch(4, [6])] == [job_id]  # vouching any rewarded raider frees the thread
+
+
+def test_only_the_confirmed_squad_is_rewarded(svc, engine):
+    job_id = _squad_job(svc, engine)
+    svc.set_squad(job_id, 2, {5: V})
+    svc.set_squad(job_id, 3, {6: V, 7: V})
+    svc.mark_complete(job_id, 2)
+    svc.mark_complete(job_id, 3)
+    svc.reject_completion(job_id, 4, 2)  # 2's squad hadn't really finished
+    row, awards = svc.confirm_many(job_id, 4)
+    assert [u for u, _ in awards] == [3, 6, 7]
+
+
+def test_squad_rules(svc, engine):
+    job_id = _squad_job(svc, engine)
+    assert svc.set_squad(job_id, 9, {5: V})[2] == "not_attempting"
+    squad, skipped, _ = svc.set_squad(job_id, 2, {4: V, 2: V, 3: V, 5: ("green_horn", 10.0), 6: ("vanguard", 1.0),
+                                                  7: (None, 10.0)})
+    assert squad == [3] and skipped == {4: "own", 2: "own", 5: "rank_too_low", 6: "too_new", 7: "not_placed"}
+    assert svc.set_squad(job_id, 3, {5: V})[2] == "in_squad"  # 3 is in 2's squad
+    squad, skipped, _ = svc.set_squad(job_id, 2, {3: V, 5: V, 6: V})  # max_size 3 = leader + 2
+    assert squad == [3, 5] and skipped == {6: "full"}
+    assert svc.set_squad(job_id, 2, {})[0] == [] and svc.squad_of(job_id, 2) == []  # cleared
+    svc.set_squad(job_id, 2, {5: V})
+    svc.mark_complete(job_id, 2)
+    assert svc.set_squad(job_id, 2, {6: V})[2] == "locked"  # locked once marked complete
+    plain = _squad_job(svc, engine, squad=False)
+    assert svc.set_squad(plain, 2, {5: V})[2] == "not_squad"
+
+
+def test_squad_rewards_respect_caps(svc, engine, conn):
+    for p in (20, 21):
+        engine.place(p, "scavenger")
+    for p in (20, 21):
+        _complete(svc, p, 5, tier="vanguard_plus", title=f"from {p}")  # 5 has 30 of the 40 daily
+    job_id = _squad_job(svc, engine)
+    svc.set_squad(job_id, 2, {5: V, 6: V})
+    svc.mark_complete(job_id, 2)
+    _, awards = svc.confirm_many(job_id, 4)
+    assert dict((u, a.points) for u, a in awards) == {2: 15, 5: 10, 6: 15}

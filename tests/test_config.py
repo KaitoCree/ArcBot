@@ -50,6 +50,39 @@ def test_migrations_apply_and_are_idempotent(tmp_path):
     c.close()
 
 
+def test_job_attempts_migration_keeps_existing_helpers():
+    import sqlite3
+
+    from arcbot.db import MIGRATIONS_DIR, _split_sql, migrate
+
+    c = sqlite3.connect(":memory:", isolation_level=None)
+    c.row_factory = sqlite3.Row
+    for name in ("001_initial.sql", "002_cooldowns_and_job_completion.sql"):
+        for stmt in _split_sql((MIGRATIONS_DIR / name).read_text(encoding="utf-8")):
+            c.execute(stmt)
+    c.execute("PRAGMA user_version = 2")
+    ins = ("INSERT INTO jobs(id, poster_id, title, description, tier, status, helper_id, created_at, accepted_at,"
+           " closed_at, thread_id) VALUES(?,1,'t','d','anyone',?,?,'2026-01-01','2026-01-02',?,?)")
+    c.execute(ins, (1, "accepted", 2, None, 50))
+    c.execute(ins, (2, "awaiting_confirm", 3, None, 51))
+    c.execute(ins, (3, "completed", 4, "2026-01-03", 52))
+    migrate(c)
+    rows = {r["id"]: r for r in c.execute("SELECT * FROM jobs")}
+    assert rows[1]["helper_id"] is None and rows[2]["helper_id"] == 3  # only a pending claim keeps its claimer
+    assert [tuple(r) for r in c.execute("SELECT job_id, user_id FROM job_attempts ORDER BY job_id")] == [(1, 2), (2, 3)]
+    assert rows[3]["thread_closed_at"] and rows[1]["thread_closed_at"] is None  # old finished threads are left alone
+    assert rows[1]["xp_multiplier"] == 1
+    assert [tuple(r) for r in c.execute("SELECT job_id, user_id FROM job_completions")] == [(2, 3)]
+    assert [tuple(r) for r in c.execute("SELECT job_id, user_id, place FROM job_rewards")] == [(3, 4, 1)]
+
+
+def test_xp_boosts_validated(cfg):
+    raw = stdcopy.deepcopy(cfg.raw)
+    raw["points"]["job_xp_boosts"] = [{"label": "Half", "multiplier": 0.5}]
+    with pytest.raises(ConfigError, match="job_xp_boosts"):
+        Config(raw, root=cfg.root)
+
+
 def test_env_example_has_no_real_values():
     """The template is shared; real secrets belong only in .env (gitignored)."""
     from pathlib import Path

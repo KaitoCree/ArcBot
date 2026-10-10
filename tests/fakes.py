@@ -43,6 +43,14 @@ class FakeChannel:
         return self.get_partial_message(mid)
 
 
+class FakeThread(FakeChannel):
+    def __init__(self, name: str, parent: FakeChannel):
+        super().__init__(name, parent.guild)
+        self.parent = parent
+        self.members: list[int] = []
+        self.closed = False
+
+
 class FakeMember:
     def __init__(self, uid: int, name: str, *, days_in_guild: float = 30, bot: bool = False):
         self.id = uid
@@ -76,6 +84,8 @@ class RecordingGateway(Gateway):
         self.mod_visible: list[str] = []
         self.role_changes: list[tuple[int, list[str], list[str]]] = []
         self.reactions: list[tuple[int, str]] = []
+        self.threads: list[FakeThread] = []
+        self.sent: list[tuple[Any, str]] = []  # (target, text) for player-visible sends
 
     def _rec(self, mod_only: bool, content: str | None, embed: discord.Embed | None, user_texts=()):
         text = (content or "") + "\n" + _embed_text(embed)
@@ -89,6 +99,8 @@ class RecordingGateway(Gateway):
     async def send(self, target, content=None, *, embed=None, view=None, files=None, allowed_mentions=None,
                    mod_only=False, user_texts=(), reference=None, delete_after=None):
         self._rec(mod_only, content, embed, user_texts)
+        if not mod_only:
+            self.sent.append((target, content or ""))
         return FakeMessage(target)
 
     async def edit(self, message, *, content=None, embed=None, view=..., mod_only=False, user_texts=(),
@@ -107,6 +119,22 @@ class RecordingGateway(Gateway):
 
     async def create_thread(self, message, name):
         return None
+
+    async def create_private_thread(self, channel, name):
+        t = FakeThread(name, channel)
+        if channel.guild is not None:
+            channel.guild.channels[t.id] = t
+        self.threads.append(t)
+        return t
+
+    async def add_to_thread(self, thread, user_id):
+        if user_id not in thread.members:
+            thread.members.append(user_id)
+        return True
+
+    async def close_thread(self, thread, *, delete):
+        thread.closed = True
+        return True
 
     async def set_roles(self, member, add, remove, reason):
         self.role_changes.append((member.id, [r.name for r in add], [r.name for r in remove]))

@@ -157,6 +157,51 @@ class Gateway:
             log.warning("could not create thread: %s", exc)
             return None
 
+    async def create_private_thread(self, channel: discord.TextChannel, name: str) -> discord.Thread | None:
+        """Invite-only thread: only the people the bot adds (and mods with Manage Threads) can see it."""
+        if self.dry_run:
+            log.info("[dry-run] private thread '%s' in %s", name, channel.id)
+            return None
+        try:
+            return await channel.create_thread(name=name[:100], type=discord.ChannelType.private_thread,
+                                               invitable=False, auto_archive_duration=10080)
+        except discord.HTTPException as exc:
+            log.warning("could not create private thread: %s", exc)
+            return None
+
+    async def add_to_thread(self, thread: discord.Thread, user_id: int) -> bool:
+        if self.dry_run:
+            log.info("[dry-run] add %s to thread %s", user_id, thread.id)
+            return True
+        try:
+            await thread.add_user(discord.Object(user_id))
+            return True
+        except discord.HTTPException as exc:
+            log.warning("could not add %s to thread %s: %s", user_id, thread.id, exc)
+            return False
+
+    async def close_thread(self, thread: discord.Thread, *, delete: bool) -> bool:
+        """Delete the thread (needs Manage Threads); falls back to archive + lock."""
+        if self.dry_run:
+            log.info("[dry-run] %s thread %s", "delete" if delete else "archive", thread.id)
+            return True
+        if delete:
+            try:
+                await thread.delete()
+                return True
+            except discord.NotFound:
+                return True
+            except discord.HTTPException as exc:
+                log.warning("could not delete thread %s (%s); archiving instead", thread.id, exc)
+        try:
+            await thread.edit(archived=True, locked=True)
+            return True
+        except discord.NotFound:
+            return True
+        except discord.HTTPException as exc:
+            log.warning("could not archive thread %s: %s", thread.id, exc)
+            return False
+
     async def set_roles(
         self,
         member: discord.Member,
