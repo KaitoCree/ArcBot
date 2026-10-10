@@ -160,14 +160,9 @@ class Config:
             errors.append("points.job_xp_boosts multipliers must be between 1 and 10")
         if len(self.job_xp_boosts) > 25:
             errors.append("points.job_xp_boosts can have at most 25 entries (Discord select limit)")
-        sq = dict(pts.get("job_squad_rewards") or {})
-        self.squad_max_winners: int = int(sq.get("max_winners", 3))
-        self.squad_placed_shares: list[float] = [float(x) for x in sq.get("placed_shares", [1.0, 0.6, 0.3])]
-        if not 1 <= self.squad_max_winners <= 25:
-            errors.append("points.job_squad_rewards.max_winners must be 1..25")
-        if len(self.squad_placed_shares) < self.squad_max_winners or any(
-                not 0 < x <= 1 for x in self.squad_placed_shares):
-            errors.append("points.job_squad_rewards.placed_shares needs one share (0 < share <= 1) per winner")
+        self.squad_max_size: int = int((pts.get("job_squads") or {}).get("max_size", 3))
+        if not 2 <= self.squad_max_size <= 26:
+            errors.append("points.job_squads.max_size must be 2..26")
         if int(self.job_rules.get("max_attempters_per_job", 8)) < 1:
             errors.append("points.job_rules.max_attempters_per_job must be >= 1")
 

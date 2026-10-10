@@ -152,10 +152,11 @@ class JobService:
 
     # ------------------------------------------------------------ create/route
     def create(self, poster_id: int, title: str, description: str, tier: str, *, has_image: bool,
-               xp_multiplier: float = 1.0, now: datetime | None = None) -> tuple[int, str, list[str]]:
+               xp_multiplier: float = 1.0, squad: bool = False, now: datetime | None = None
+               ) -> tuple[int, str, list[str]]:
         """Returns (job_id, status, reasons). 'open' with reasons = posted now, mods get a heads-up.
 
-        xp_multiplier is a Guild Master boost; the caller checks who is posting."""
+        xp_multiplier and squad are Guild Master options; the caller checks who is posting."""
         now = now or utcnow()
         t = self.tier(tier)
         if xp_multiplier not in {b.multiplier for b in self.cfg.job_xp_boosts}:
@@ -169,9 +170,9 @@ class JobService:
         with transaction(self.conn):
             cur = self.conn.execute(
                 "INSERT INTO jobs(poster_id, title, description, tier, status, flag_reasons, has_image, created_at,"
-                " posted_at, xp_multiplier) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                " posted_at, xp_multiplier, squad) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (poster_id, title, description, tier, status, json.dumps(reasons), int(has_image), iso(now),
-                 iso(now) if status == "open" else None, float(xp_multiplier)))
+                 iso(now) if status == "open" else None, float(xp_multiplier), int(squad)))
             self.engine.touch_activity(poster_id, now)
         return int(cur.lastrowid), status, reasons
 
@@ -316,56 +317,111 @@ class JobService:
     def confirm(self, job_id: int, by: int, user_id: int | None = None,
                 now: datetime | None = None) -> tuple[sqlite3.Row | None, Award | None]:
         """The poster confirms who really completed it (default: the earliest pending); that raider is rewarded."""
-        row, awards = self.confirm_many(job_id, by, [user_id] if user_id is not None else None, now=now)
+        row, awards = self.confirm_many(job_id, by, user_id, now=now)
         return row, (awards[0][1] if awards else None)
 
-    def confirm_many(self, job_id: int, by: int, winners: list[int] | None = None, *, mode: str = "single",
-                     poster_is_guild_master: bool = False, now: datetime | None = None
+    def confirm_many(self, job_id: int, by: int, user_id: int | None = None, *, now: datetime | None = None
                      ) -> tuple[sqlite3.Row | None, list[tuple[int, Award]]]:
-        """Confirm the job and reward winners (default: the earliest pending), ordered by completion.
-
-        Only a Guild Master may reward more than one (up to squad_max_winners): mode "placed" scales each by
-        placed_shares (1st, 2nd, 3rd), "full" gives everyone the whole reward."""
+        """Confirm who completed it (default: the earliest pending). On a squad job their squad is rewarded too,
+        each with the full reward. Returns (job, [(raider, award), ...]) with the confirmed raider first."""
         now = now or utcnow()
         with transaction(self.conn):
             job = self.get(job_id)
             if job is None or job["status"] != "awaiting_confirm" or by != job["poster_id"]:
                 return job, []
             pending = self.pending_completions(job_id)
-            if not winners:
-                winners = [pending[0] if pending else job["helper_id"]]
-            winners = list(dict.fromkeys(winners))
-            if len(winners) > 1 and (not poster_is_guild_master or len(winners) > self.cfg.squad_max_winners
-                                     or mode not in ("placed", "full")):
+            helper = user_id if user_id is not None else (pending[0] if pending else job["helper_id"])
+            if pending and helper not in pending:
                 return job, []
-            if pending and any(w not in pending for w in winners):
-                return job, []
-            winners.sort(key=lambda w: pending.index(w) if w in pending else 0)  # fastest successful first
-            mode = mode if len(winners) > 1 else "single"
+            winners = [helper] + (self.squad_of(job_id, helper) if job["squad"] else [])
             self.conn.execute("UPDATE jobs SET helper_id = ?, reward_mode = ? WHERE id = ?",
-                              (winners[0], mode, job_id))
+                              (helper, "squad" if len(winners) > 1 else "single", job_id))
             job = self.get(job_id)
-            awards = []
-            for place, uid in enumerate(winners, 1):
-                share = self.cfg.squad_placed_shares[place - 1] if mode == "placed" else 1.0
-                awards.append((uid, self._award(job, now, helper=uid, place=place, share=share)))
+            awards = [(uid, self._award(job, now, helper=uid, place=place)) for place, uid in enumerate(winners, 1)]
             self.conn.execute("UPDATE jobs SET status = 'completed', closed_at = ?, awarded_points = ? WHERE id = ?",
                               (iso(now), awards[0][1].points, job_id))
             return self.get(job_id), awards
 
+    # ------------------------------------------------------------ squads
+    def squad_of(self, job_id: int, leader_id: int) -> list[int]:
+        return [r["member_id"] for r in self.conn.execute(
+            "SELECT member_id FROM job_squad_members WHERE job_id = ? AND leader_id = ? ORDER BY added_at, rowid",
+            (job_id, leader_id))]
+
+    def squads(self, job_id: int) -> dict[int, list[int]]:
+        out: dict[int, list[int]] = {}
+        for r in self.conn.execute("SELECT leader_id, member_id FROM job_squad_members WHERE job_id = ?"
+                                   " ORDER BY added_at, rowid", (job_id,)):
+            out.setdefault(r["leader_id"], []).append(r["member_id"])
+        return out
+
+    def squad_block_reason(self, job: sqlite3.Row, leader_id: int) -> str | None:
+        if not job["squad"]:
+            return "not_squad"
+        if job["status"] not in self.JOINABLE:
+            return "taken"
+        if not self.is_attempting(job["id"], leader_id):
+            return "not_attempting"  # (an open job has nobody attempting yet)
+        if leader_id in self.pending_completions(job["id"]):
+            return "locked"  # already marked complete: the poster is judging this squad
+        if self.conn.execute("SELECT 1 FROM job_squad_members WHERE job_id = ? AND member_id = ?",
+                             (job["id"], leader_id)).fetchone():
+            return "in_squad"
+        return None
+
+    def set_squad(self, job_id: int, leader_id: int, members: dict[int, tuple[str | None, float | None]],
+                  now: datetime | None = None) -> tuple[list[int], dict[int, str], str | None]:
+        """Replace leader_id's squad. members = {user_id: (rank_key, days_in_guild)}.
+
+        Returns (squad now, {skipped user: reason}, block reason for the whole request)."""
+        now = now or utcnow()
+        with transaction(self.conn):
+            job = self.get(job_id)
+            if job is None:
+                return [], {}, "taken"
+            block = self.squad_block_reason(job, leader_id)
+            if block:
+                return self.squad_of(job_id, leader_id), {}, block
+            others = {m for lead, ms in self.squads(job_id).items() if lead != leader_id for m in ms}
+            leaders = set(self.squads(job_id)) - {leader_id}
+            room = self.cfg.squad_max_size - 1
+            keep: list[int] = []
+            skipped: dict[int, str] = {}
+            for uid, (rank, days) in members.items():
+                reason = None
+                if uid in (leader_id, job["poster_id"]):
+                    reason = "own"
+                elif uid in others or uid in leaders:
+                    reason = "in_squad"
+                elif rank is None:
+                    reason = "not_placed"
+                elif not self.engine.ranks.at_least(rank, self.tier(job["tier"]).min_rank):
+                    reason = "rank_too_low"
+                elif days is not None and days < float(self.rules["helper_min_days_in_guild"]):
+                    reason = "too_new"
+                elif len(keep) >= room:
+                    reason = "full"
+                if reason:
+                    skipped[uid] = reason
+                else:
+                    keep.append(uid)
+            self.conn.execute("DELETE FROM job_squad_members WHERE job_id = ? AND leader_id = ?", (job_id, leader_id))
+            for uid in keep:
+                self.conn.execute("INSERT INTO job_squad_members(job_id, leader_id, member_id, added_at)"
+                                  " VALUES(?,?,?,?)", (job_id, leader_id, uid, iso(now)))
+            return keep, skipped, None
+
     def winners(self, job_id: int) -> list[int]:
-        """Rewarded raiders, 1st place first."""
+        """Rewarded raiders: the confirmed one first, then their squad."""
         return [r["user_id"] for r in self.conn.execute(
             "SELECT user_id FROM job_rewards WHERE job_id = ? ORDER BY place", (job_id,))]
 
-    def _award(self, job: sqlite3.Row, now: datetime, *, helper: int | None = None, place: int = 1,
-               share: float = 1.0) -> Award:
+    def _award(self, job: sqlite3.Row, now: datetime, *, helper: int | None = None, place: int = 1) -> Award:
         helper = helper if helper is not None else job["helper_id"]
         poster = job["poster_id"]
-        base = self.tier(job["tier"]).points
-        points = max(1, round(base * share))
+        points = self.tier(job["tier"]).points
         # Guild Master boost: the extra rides on top of the daily cap (the pair cap still stops farming)
-        bonus = max(points, round(base * float(job["xp_multiplier"] or 1) * share)) - points
+        bonus = round(points * float(job["xp_multiplier"] or 1)) - points
         award = self._capped(job, helper, poster, points, bonus, now)
         self.conn.execute("INSERT OR REPLACE INTO job_rewards(job_id, user_id, place, points, created_at)"
                           " VALUES(?,?,?,?,?)", (job["id"], helper, place, award.points, iso(now)))

@@ -183,7 +183,7 @@ async def test_player_flows_never_show_points(world):
     order = it.replies[-1]
     assert order.index("1st") < order.index("<@5>") < order.index("2nd") < order.index("<@3>")
     # 5 hadn't really finished: turned down, 3 moves up and is confirmed as the fastest successful completion
-    it = await act(2, jobs.reject_completion, job["id"], [5])
+    it = await act(2, jobs.reject_completion, job["id"], 5)
     assert "(not done)" in it.replies[-1]
     assert jobs.service.get(job["id"])["helper_id"] == 3
     await act(2, jobs.confirm_completion, job["id"], None)
@@ -196,8 +196,8 @@ async def test_player_flows_never_show_points(world):
     assert thread.closed and jobs.service.get(job["id"])["thread_closed_at"]
     # Guild Master boost: only offered to the Guild Master, and only honoured for them
     import arcbot.cogs.jobs as cj
-    assert cj.PostJobModal(app).boost_in is None
-    assert cj.PostJobModal(app, can_boost=True).boost_in is not None
+    assert cj.PostJobModal(app).special_in is None
+    assert any(o.label.startswith("Squad job") for o in cj.PostJobModal(app, can_boost=True).special_in.options)
     real_gm = app.is_guild_master
     app.is_guild_master = lambda m: m.id == 4  # type: ignore[method-assign]
     await act(4, jobs.submit, "Guild night", "Big guild night run through Buried City, all welcome.", "anyone", [],
@@ -206,22 +206,29 @@ async def test_player_flows_never_show_points(world):
     special = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
     assert special["xp_multiplier"] == app.cfg.job_xp_boosts[2].multiplier > 1
     assert any("Special job" in t for t in gw.player_visible)
-    # Guild Master squad job: three raiders finish, all rewarded with placed shares
-    for uid in (3, 5, 9):
-        await act(uid, jobs.on_accept, special["id"])
-    for uid in (5, 3, 9):
-        await act(uid, jobs.on_complete, special["id"])
+    # Guild Master squad job: the raider attempting adds their squad; confirming them rewards everyone
     app.is_guild_master = lambda m: m.id == 4  # type: ignore[method-assign]
-    _, panel = await jobs._review_panel(special["id"])
-    assert panel.pick.max_values == 3 and panel.mode is not None
-    before = {u: app.engine.get_user(u)["points"] for u in (3, 5, 9)}
-    await act(4, jobs.confirm_completion, special["id"], [9, 3, 5], mode="placed")
+    await act(4, jobs.submit, "Squad night", "Full squad run through the Spaceport, bring your crew along.",
+              "anyone", [], squad=True)
     app.is_guild_master = real_gm  # type: ignore[method-assign]
-    assert jobs.service.winners(special["id"]) == [5, 3, 9]  # placed by completion order, not pick order
-    gained = [app.engine.get_user(u)["points"] - before[u] for u in (5, 3, 9)]
-    assert gained[0] > gained[2] > 0 and gained[0] >= gained[1] >= gained[2]  # small tiers round coarsely
-    sq_thread = app.bot_channel(jobs.service.get(special["id"])["thread_id"])
-    await act(4, bot.get_cog("Vouch").guided_vouch, await app.member(9), "Great squad run through Buried City")
+    sq = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
+    assert sq["squad"] == 1 and any("Squad job" in t for t in gw.player_visible)
+    it = await act(3, jobs.on_squad, sq["id"])
+    assert any("I'm attempting" in r for r in it.replies)  # attempt first
+    await act(3, jobs.on_accept, sq["id"])
+    await act(3, jobs.on_squad, sq["id"])
+    await act(3, jobs.save_squad, sq["id"], [await app.member(5), await app.member(9), await app.member(4)])
+    assert jobs.service.squad_of(sq["id"], 3) == [5, 9]  # the poster can't join
+    sq_thread = app.bot_channel(jobs.service.get(sq["id"])["thread_id"])
+    assert {3, 5, 9} <= set(sq_thread.members)
+    await act(3, jobs.on_complete, sq["id"])
+    it = await act(4, jobs.on_review, sq["id"])
+    assert "<@3> + <@5> <@9>" in it.replies[-1]
+    before = {u: app.engine.get_user(u)["points"] for u in (3, 5, 9)}
+    await act(4, jobs.confirm_completion, sq["id"], None)
+    assert jobs.service.winners(sq["id"]) == [3, 5, 9]
+    assert all(app.engine.get_user(u)["points"] > before[u] for u in (3, 5, 9))
+    await act(4, bot.get_cog("Vouch").guided_vouch, await app.member(9), "Great squad run through the Spaceport")
     assert sq_thread.closed  # vouching for any rewarded raider closes the thread
     # job held for mods, then rejected
     await act(1, jobs.submit, "Cheap carry", "paid carry service, dm me now for a price", "anyone", [])
@@ -251,7 +258,7 @@ async def test_player_flows_never_show_points(world):
     await act(3, jobs.reject_completion, soft["id"], None)
     assert jobs.service.get(soft["id"])["status"] == "accepted"
     await act(5, jobs.on_complete, soft["id"])
-    await act(3, jobs.confirm_completion, soft["id"], [5])
+    await act(3, jobs.confirm_completion, soft["id"], 5)
     assert jobs.service.get(soft["id"])["status"] == "completed"
     vet_job, _, _ = jobs.service.create(4, "Veteran run", "Hard Matriarch kill, Veterans only please.", "veterans_only",
                                         has_image=False)

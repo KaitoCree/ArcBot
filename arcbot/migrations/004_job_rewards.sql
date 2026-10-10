@@ -1,5 +1,5 @@
--- One row per rewarded raider per job. A Guild Master's job can reward up to 3 (placed shares or full each);
--- everyone else's rewards exactly one. Caps (pair, daily) are counted from here.
+-- One row per rewarded raider per job (a squad job rewards the confirmed raider and their squad);
+-- other jobs reward exactly one. Caps (pair, daily) are counted from here.
 CREATE TABLE job_rewards (
     job_id     INTEGER NOT NULL,
     user_id    INTEGER NOT NULL,
