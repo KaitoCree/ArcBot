@@ -140,8 +140,8 @@ class JobService:
                 reasons.append("duplicate of a recent post")
                 break
         open_count = self.conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE poster_id = ? AND status IN ('pending_review','open','accepted',"
-            "'awaiting_confirm')", (poster_id,)).fetchone()[0]
+            "SELECT COUNT(*) FROM jobs WHERE poster_id = ? AND kind = 'job' AND status IN ('pending_review','open',"
+            "'accepted','awaiting_confirm')", (poster_id,)).fetchone()[0]  # challenges stay open; not counted
         if open_count >= int(self.rules["max_open_jobs_per_poster"]):
             reasons.append(f"poster already has {open_count} open jobs")
         posted_today = self.conn.execute("SELECT COUNT(*) FROM jobs WHERE poster_id = ? AND created_at > ?",
@@ -152,15 +152,17 @@ class JobService:
 
     # ------------------------------------------------------------ create/route
     def create(self, poster_id: int, title: str, description: str, tier: str, *, has_image: bool,
-               xp_multiplier: float = 1.0, squad: bool = False, now: datetime | None = None
+               xp_multiplier: float = 1.0, kind: str = "job", now: datetime | None = None
                ) -> tuple[int, str, list[str]]:
         """Returns (job_id, status, reasons). 'open' with reasons = posted now, mods get a heads-up.
 
-        xp_multiplier and squad are Guild Master options; the caller checks who is posting."""
+        xp_multiplier and kind="challenge" are Guild Master options; the caller checks who is posting."""
         now = now or utcnow()
         t = self.tier(tier)
         if xp_multiplier not in {b.multiplier for b in self.cfg.job_xp_boosts}:
             xp_multiplier = 1.0
+        if kind not in ("job", "challenge"):
+            kind = "job"
         res = self.check_listing(poster_id, title, description, now)
         reasons = list(res.reasons)
         if t.mod_preview:
@@ -170,9 +172,9 @@ class JobService:
         with transaction(self.conn):
             cur = self.conn.execute(
                 "INSERT INTO jobs(poster_id, title, description, tier, status, flag_reasons, has_image, created_at,"
-                " posted_at, xp_multiplier, squad) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                " posted_at, xp_multiplier, kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (poster_id, title, description, tier, status, json.dumps(reasons), int(has_image), iso(now),
-                 iso(now) if status == "open" else None, float(xp_multiplier), int(squad)))
+                 iso(now) if status == "open" else None, float(xp_multiplier), kind))
             self.engine.touch_activity(poster_id, now)
         return int(cur.lastrowid), status, reasons
 
@@ -219,6 +221,8 @@ class JobService:
     def accept_block_reason(self, job: sqlite3.Row, helper_id: int, *, helper_rank: str | None,
                             days_in_guild: float | None) -> str | None:
         ranks = self.engine.ranks
+        if job["kind"] == "challenge":
+            return "challenge"  # squads join challenges through Form squad
         if job["status"] not in self.JOINABLE:
             return "taken"
         if job["poster_id"] == helper_id:
@@ -322,8 +326,7 @@ class JobService:
 
     def confirm_many(self, job_id: int, by: int, user_id: int | None = None, *, now: datetime | None = None
                      ) -> tuple[sqlite3.Row | None, list[tuple[int, Award]]]:
-        """Confirm who completed it (default: the earliest pending). On a squad job their squad is rewarded too,
-        each with the full reward. Returns (job, [(raider, award), ...]) with the confirmed raider first."""
+        """Confirm who completed it (default: the earliest pending). Returns (job, [(raider, award)])."""
         now = now or utcnow()
         with transaction(self.conn):
             job = self.get(job_id)
@@ -333,88 +336,17 @@ class JobService:
             helper = user_id if user_id is not None else (pending[0] if pending else job["helper_id"])
             if pending and helper not in pending:
                 return job, []
-            winners = [helper] + (self.squad_of(job_id, helper) if job["squad"] else [])
-            self.conn.execute("UPDATE jobs SET helper_id = ?, reward_mode = ? WHERE id = ?",
-                              (helper, "squad" if len(winners) > 1 else "single", job_id))
+            self.conn.execute("UPDATE jobs SET helper_id = ?, reward_mode = 'single' WHERE id = ?", (helper, job_id))
             job = self.get(job_id)
-            awards = [(uid, self._award(job, now, helper=uid, place=place)) for place, uid in enumerate(winners, 1)]
+            awards = [(helper, self._award(job, now))]
             self.conn.execute("UPDATE jobs SET status = 'completed', closed_at = ?, awarded_points = ? WHERE id = ?",
                               (iso(now), awards[0][1].points, job_id))
             return self.get(job_id), awards
 
-    # ------------------------------------------------------------ squads
-    def squad_of(self, job_id: int, leader_id: int) -> list[int]:
-        return [r["member_id"] for r in self.conn.execute(
-            "SELECT member_id FROM job_squad_members WHERE job_id = ? AND leader_id = ? ORDER BY added_at, rowid",
-            (job_id, leader_id))]
-
-    def squads(self, job_id: int) -> dict[int, list[int]]:
-        out: dict[int, list[int]] = {}
-        for r in self.conn.execute("SELECT leader_id, member_id FROM job_squad_members WHERE job_id = ?"
-                                   " ORDER BY added_at, rowid", (job_id,)):
-            out.setdefault(r["leader_id"], []).append(r["member_id"])
-        return out
-
-    def squad_block_reason(self, job: sqlite3.Row, leader_id: int) -> str | None:
-        if not job["squad"]:
-            return "not_squad"
-        if job["status"] not in self.JOINABLE:
-            return "taken"
-        if not self.is_attempting(job["id"], leader_id):
-            return "not_attempting"  # (an open job has nobody attempting yet)
-        if leader_id in self.pending_completions(job["id"]):
-            return "locked"  # already marked complete: the poster is judging this squad
-        if self.conn.execute("SELECT 1 FROM job_squad_members WHERE job_id = ? AND member_id = ?",
-                             (job["id"], leader_id)).fetchone():
-            return "in_squad"
-        return None
-
-    def set_squad(self, job_id: int, leader_id: int, members: dict[int, tuple[str | None, float | None]],
-                  now: datetime | None = None) -> tuple[list[int], dict[int, str], str | None]:
-        """Replace leader_id's squad. members = {user_id: (rank_key, days_in_guild)}.
-
-        Returns (squad now, {skipped user: reason}, block reason for the whole request)."""
-        now = now or utcnow()
-        with transaction(self.conn):
-            job = self.get(job_id)
-            if job is None:
-                return [], {}, "taken"
-            block = self.squad_block_reason(job, leader_id)
-            if block:
-                return self.squad_of(job_id, leader_id), {}, block
-            others = {m for lead, ms in self.squads(job_id).items() if lead != leader_id for m in ms}
-            leaders = set(self.squads(job_id)) - {leader_id}
-            room = self.cfg.squad_max_size - 1
-            keep: list[int] = []
-            skipped: dict[int, str] = {}
-            for uid, (rank, days) in members.items():
-                reason = None
-                if uid in (leader_id, job["poster_id"]):
-                    reason = "own"
-                elif uid in others or uid in leaders:
-                    reason = "in_squad"
-                elif rank is None:
-                    reason = "not_placed"
-                elif not self.engine.ranks.at_least(rank, self.tier(job["tier"]).min_rank):
-                    reason = "rank_too_low"
-                elif days is not None and days < float(self.rules["helper_min_days_in_guild"]):
-                    reason = "too_new"
-                elif len(keep) >= room:
-                    reason = "full"
-                if reason:
-                    skipped[uid] = reason
-                else:
-                    keep.append(uid)
-            self.conn.execute("DELETE FROM job_squad_members WHERE job_id = ? AND leader_id = ?", (job_id, leader_id))
-            for uid in keep:
-                self.conn.execute("INSERT INTO job_squad_members(job_id, leader_id, member_id, added_at)"
-                                  " VALUES(?,?,?,?)", (job_id, leader_id, uid, iso(now)))
-            return keep, skipped, None
-
     def winners(self, job_id: int) -> list[int]:
-        """Rewarded raiders: the confirmed one first, then their squad."""
+        """Rewarded raiders (one for a job; every approved squad member for a challenge), in clear order."""
         return [r["user_id"] for r in self.conn.execute(
-            "SELECT user_id FROM job_rewards WHERE job_id = ? ORDER BY place", (job_id,))]
+            "SELECT user_id FROM job_rewards WHERE job_id = ? ORDER BY place, rowid", (job_id,))]
 
     def _award(self, job: sqlite3.Row, now: datetime, *, helper: int | None = None, place: int = 1) -> Award:
         helper = helper if helper is not None else job["helper_id"]
@@ -545,7 +477,8 @@ class JobService:
         acc_cut = now - timedelta(days=int(self.rules["accepted_job_expires_days"]))
         out = []
         # awaiting_confirm never silently expires: due_escalations hands it to the mods instead
-        for job in self.conn.execute("SELECT * FROM jobs WHERE status IN ('open','accepted')").fetchall():
+        for job in self.conn.execute("SELECT * FROM jobs WHERE status IN ('open','accepted') AND kind = 'job'"
+                                     ).fetchall():  # challenges stay open until the Guild Master closes them
             if job["status"] == "open":
                 since = parse_iso(job["posted_at"] or job["created_at"])
                 due = since is not None and since <= open_cut
