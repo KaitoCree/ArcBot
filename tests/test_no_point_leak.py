@@ -74,6 +74,7 @@ def test_guard_ignores_user_text():
 async def world(cfg, copy, monkeypatch, tmp_path):
     cfg.backups["enabled"] = False
     cfg.timers["enabled"] = False
+    cfg.trials["enabled"] = False
     app = App(cfg, copy, connect(":memory:"), dry_run=False, guild_id=None)
     gw = RecordingGateway()
     app.gateway = gw

@@ -18,7 +18,7 @@ from .db import connect
 
 log = logging.getLogger("arcbot")
 
-COGS = ["onboarding", "promotion", "vouch", "jobs", "challenges", "modtools", "timers"]
+COGS = ["onboarding", "promotion", "vouch", "jobs", "challenges", "modtools", "timers", "trials"]
 
 
 def _backup_time(cfg) -> dtime:

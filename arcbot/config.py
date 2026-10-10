@@ -181,6 +181,7 @@ class Config:
             self.flag_list = {}
 
         self.timers: dict[str, Any] = dict(r["timers"])
+        self.trials: dict[str, Any] = dict(r.get("trials") or {})
         self.ocr: dict[str, Any] = dict(r["ocr"])
         self.backups: dict[str, Any] = dict(r["backups"])
         self.keepalive: dict[str, Any] = dict(r["keepalive"])

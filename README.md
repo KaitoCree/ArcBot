@@ -68,6 +68,10 @@ itself: restarts on crash, nightly backups, self-checks on startup.
 - One pinned embed with active and upcoming events from MetaForge's public API, updated when the schedule
   changes.
 
+**Weekly trials (`#trials`)**
+- One pinned embed with this week's trials (with when they reset) and next week's, from MetaForge's weekly
+  trials list. Fetched again after each reset or every few hours; trial names link to MetaForge's guides.
+
 ## Project layout
 
 ```

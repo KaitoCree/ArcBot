@@ -1,0 +1,300 @@
+{
+ "data": [
+  {
+   "id": "weekly-trial:4DEgq8yC:253203809:622199556",
+   "trial_id": "4DEgq8yC",
+   "name": "Damage ARC enemies using a Stiletto",
+   "content_name": "Damage ARC enemies using a Stiletto",
+   "image_url": "https://static.metaforge.app/arc-raiders/weekly-trials/damage-arc-enemies-using-stiletto.webp",
+   "guide_link": "https://metaforge.app/arc-raiders/damage-arc-enemies-using-a-stiletto",
+   "video_link": null,
+   "database_links": [],
+   "is_active": true,
+   "upcoming": false,
+   "has_event_header": false,
+   "sort_order": 35,
+   "multiplier": 1.5,
+   "parameters": [
+    {
+     "name": "EnemyTargetType",
+     "value": "1"
+    },
+    {
+     "name": "ExcludeSquadDamage",
+     "value": "false"
+    },
+    {
+     "name": "Item",
+     "value": "1937104159"
+    },
+    {
+     "name": "Target",
+     "value": "414712737"
+    }
+   ],
+   "objective_id": 253203809,
+   "window_id": 622199556,
+   "map_ids": null,
+   "map_names": [],
+   "map_condition": null,
+   "image_id": -1437326487,
+   "description_key": "l0c4l1z3d_146040472",
+   "type": "Damage",
+   "map_links": [
+    {
+     "mapId": "dam",
+     "mapName": "Dam Battlegrounds",
+     "enemyIds": [
+      "bastion",
+      "bison",
+      "bombardier",
+      "comet",
+      "firefly",
+      "hornet",
+      "rocketeer",
+      "rollbot",
+      "sentinel",
+      "snitch",
+      "turbine",
+      "turret",
+      "vaporizer",
+      "wasp"
+     ],
+     "url": "/arc-raiders/gamefile-map/dam?trial=weekly-trial%3A4DEgq8yC%3A253203809%3A622199556"
+    }
+   ],
+   "window_start": 1791460800,
+   "window_end": 1791885600
+  },
+  {
+   "id": "weekly-trial:DJyEiet8:302435696:622199556",
+   "trial_id": "DJyEiet8",
+   "name": "Damage flying ARC enemies using Light Impact Grenades",
+   "content_name": "Damage flying ARC enemies using Light Impact Grenades",
+   "image_url": "https://static.metaforge.app/arc-raiders/weekly-trials/damage-flying-arc-enemies-using-light-impact-grenades.webp",
+   "guide_link": "https://metaforge.app/arc-raiders/damage-flying-arc-enemies-using-light-impact-grenades",
+   "video_link": null,
+   "database_links": [],
+   "is_active": true,
+   "upcoming": false,
+   "has_event_header": false,
+   "sort_order": 43,
+   "multiplier": 2,
+   "parameters": [
+    {
+     "name": "EnemyTargetType",
+     "value": "1"
+    },
+    {
+     "name": "ExcludeSquadDamage",
+     "value": "false"
+    },
+    {
+     "name": "Item",
+     "value": "877778759"
+    },
+    {
+     "name": "Target",
+     "value": "396135371"
+    }
+   ],
+   "objective_id": 302435696,
+   "window_id": 622199556,
+   "map_ids": null,
+   "map_names": [],
+   "map_condition": null,
+   "image_id": 1929110872,
+   "description_key": "l0c4l1z3d_216313504",
+   "type": "Damage",
+   "map_links": [
+    {
+     "mapId": "dam",
+     "mapName": "Dam Battlegrounds",
+     "enemyIds": [
+      "firefly",
+      "hornet",
+      "rocketeer",
+      "snitch",
+      "turbine",
+      "vaporizer",
+      "wasp"
+     ],
+     "url": "/arc-raiders/gamefile-map/dam?trial=weekly-trial%3ADJyEiet8%3A302435696%3A622199556"
+    }
+   ],
+   "window_start": 1791460800,
+   "window_end": 1791885600
+  },
+  {
+   "id": "weekly-trial:yy1VzhpI:579861591:622199556",
+   "trial_id": "yy1VzhpI",
+   "name": "Destroy Skulkers",
+   "content_name": "Destroy Skulkers",
+   "image_url": "https://static.metaforge.app/arc-raiders/weekly-trials/destroy-skulkers-on-pendola-pass.webp",
+   "guide_link": "https://metaforge.app/arc-raiders/destroy-skulkers",
+   "video_link": null,
+   "database_links": [],
+   "is_active": true,
+   "upcoming": false,
+   "has_event_header": true,
+   "sort_order": 128,
+   "multiplier": 500,
+   "parameters": [
+    {
+     "name": "Target",
+     "value": "836476952"
+    }
+   ],
+   "objective_id": 579861591,
+   "window_id": 622199556,
+   "map_ids": [
+    1538747736
+   ],
+   "map_names": [],
+   "map_condition": null,
+   "image_id": 220382037,
+   "description_key": "l0c4l1z3d_892445232",
+   "type": "KillEnemy",
+   "map_links": [],
+   "window_start": 1791460800,
+   "window_end": 1791885600
+  },
+  {
+   "id": "weekly-trial:hSJJh0x7:860342492:985357515",
+   "trial_id": "hSJJh0x7",
+   "name": "Damage ARC using a Bantam",
+   "content_name": "Damage ARC using a Bantam",
+   "image_url": "https://static.metaforge.app/arc-raiders/weekly-trials/damage-arc-using-a-bantam.webp",
+   "guide_link": null,
+   "video_link": null,
+   "database_links": [],
+   "is_active": false,
+   "upcoming": true,
+   "has_event_header": false,
+   "sort_order": 212,
+   "multiplier": 2,
+   "parameters": [
+    {
+     "name": "EnemyTargetType",
+     "value": "1"
+    },
+    {
+     "name": "ExcludeSquadDamage",
+     "value": "false"
+    },
+    {
+     "name": "Item",
+     "value": "2063369706"
+    },
+    {
+     "name": "Target",
+     "value": "414712737"
+    }
+   ],
+   "objective_id": 860342492,
+   "window_id": 985357515,
+   "map_ids": null,
+   "map_names": [],
+   "map_condition": null,
+   "image_id": 1853884262,
+   "description_key": "l0c4l1z3d_708267538",
+   "type": "Damage",
+   "map_links": [
+    {
+     "mapId": "dam",
+     "mapName": "Dam Battlegrounds",
+     "enemyIds": [
+      "bastion",
+      "bison",
+      "bombardier",
+      "comet",
+      "firefly",
+      "hornet",
+      "rocketeer",
+      "rollbot",
+      "sentinel",
+      "snitch",
+      "turbine",
+      "turret",
+      "vaporizer",
+      "wasp"
+     ],
+     "url": "/arc-raiders/gamefile-map/dam?trial=weekly-trial%3AhSJJh0x7%3A860342492%3A985357515"
+    }
+   ],
+   "window_start": 1791892800,
+   "window_end": 1792490400
+  },
+  {
+   "id": "weekly-trial:L94qofvT:577093022:985357515",
+   "trial_id": "L94qofvT",
+   "name": "Damage Bullies",
+   "content_name": "Damage Bullies",
+   "image_url": "https://static.metaforge.app/arc-raiders/weekly-trials/damage-bullies-on-pendola-pass.webp",
+   "guide_link": null,
+   "video_link": null,
+   "database_links": [],
+   "is_active": false,
+   "upcoming": true,
+   "has_event_header": true,
+   "sort_order": 127,
+   "multiplier": 1.3,
+   "parameters": [
+    {
+     "name": "EnemyTargetType",
+     "value": "1"
+    },
+    {
+     "name": "ExcludeSquadDamage",
+     "value": "false"
+    },
+    {
+     "name": "Target",
+     "value": "-12981809"
+    }
+   ],
+   "objective_id": 577093022,
+   "window_id": 985357515,
+   "map_ids": [
+    1538747736
+   ],
+   "map_names": [],
+   "map_condition": null,
+   "image_id": 1106317721,
+   "description_key": "l0c4l1z3d_944046233",
+   "type": "Damage",
+   "map_links": [],
+   "window_start": 1791892800,
+   "window_end": 1792490400
+  },
+  {
+   "id": "weekly-trial:tSpkG3vp",
+   "trial_id": "tSpkG3vp",
+   "name": "Damage any ARC enemies",
+   "content_name": "Damage any ARC enemies",
+   "image_url": "https://static.metaforge.app/arc-raiders/weekly-trials/damageanyarcenemies2.webp",
+   "guide_link": "https://metaforge.app/arc-raiders/damage-any-arc-enemies",
+   "video_link": null,
+   "database_links": [],
+   "is_active": false,
+   "upcoming": false,
+   "has_event_header": false,
+   "sort_order": 0,
+   "multiplier": null,
+   "parameters": null,
+   "objective_id": null,
+   "window_id": null,
+   "map_ids": null,
+   "map_names": [],
+   "map_condition": null,
+   "image_id": null,
+   "description_key": null,
+   "type": null,
+   "map_links": [],
+   "window_start": null,
+   "window_end": null
+  }
+ ],
+ "activeWindowEnd": 1791885600,
+ "nextWindowStart": 1791892800
+}

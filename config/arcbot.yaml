@@ -24,6 +24,7 @@ channels:
   vouch: "vouch"
   job_board: "job-board"
   event_timers: "event-timers"
+  trials: "trials"                # optional: weekly trials post
   rank_up_announcements: "general-chat"   # #hall-of-fame stays reserved for in-game content
 
 onboarding:
@@ -160,6 +161,15 @@ timers:
   region: "north-america"         # sent as ?region=...; retried without it if the API rejects it
   attribution_text: "Data: MetaForge"   # footer also links metaforge.app/arc-raiders (their terms)
   adopt_message_id: null          # set a message id to keep updating an existing timer post
+
+trials:
+  enabled: true
+  # MetaForge's weekly-trials list (the data behind metaforge.app/arc-raiders/weekly-trials). Fetched again after
+  # the weekly reset or every refresh_hours; a failed fetch is retried after retry_minutes.
+  refresh_hours: 6
+  retry_minutes: 15
+  map_names:                      # map ids MetaForge gives without a name, for map-specific trials
+    1538747736: "Pendola Pass"
 
 # ---- Operations -------------------------------------------------------------------------------
 ocr:
