@@ -91,3 +91,13 @@ def test_env_example_has_no_real_values():
     for line in text.splitlines():
         if line.startswith(("DISCORD_TOKEN=", "GUILD_ID=")):
             assert line.split("=", 1)[1].strip() == "", f"{line.split('=')[0]} must stay empty in .env.example"
+
+
+def test_migrations_run_on_sqlite_3_34():
+    """The server's SQLite is 3.34 (Oracle Linux 9): no DROP COLUMN (3.35+) or RETURNING (3.35+)."""
+    import re
+    from pathlib import Path
+
+    for path in sorted((Path(__file__).parent.parent / "arcbot" / "migrations").glob("*.sql")):
+        sql = "\n".join(line.split("--", 1)[0] for line in path.read_text(encoding="utf-8").splitlines())
+        assert not re.search(r"\bDROP\s+COLUMN\b|\bRETURNING\b", sql, re.IGNORECASE), path.name

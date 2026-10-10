@@ -4,7 +4,7 @@
 -- equally (first approved squad gets a bonus), each member at most once per challenge (job_rewards PK).
 ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'job';   -- job | challenge
 UPDATE jobs SET kind = 'challenge' WHERE squad = 1;
-ALTER TABLE jobs DROP COLUMN squad;
+-- jobs.squad stays (unused): DROP COLUMN needs SQLite 3.35+, Oracle Linux 9 ships 3.34.
 DROP TABLE job_squad_members;
 
 CREATE TABLE challenge_squads (
