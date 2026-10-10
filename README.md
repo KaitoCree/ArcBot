@@ -38,7 +38,14 @@ itself: restarts on crash, nightly backups, self-checks on startup.
 - *Post a job* with a "who can complete this" tier. Listings are screened against a flag list (real-money
   trading, account selling, paid carries, cheats, scams), a profanity filter, links and posting-rate caps.
   Serious hits wait for a mod; softer trade words post immediately with a heads-up to mods.
-- One helper per job; either side marks it done, the other confirms. Only the helper earns points (with caps).
+- Several raiders can tap *I'm attempting* on one job; each is added to the job's private thread with the poster.
+  The first to tap *Mark complete* claims it, and the board shows *Pending completion* so others can decide
+  whether it's still worth their time (joining then asks for a confirm). The poster confirms (or sends it back
+  with *Not done yet*); only the raider who claimed it earns points (with caps).
+- After completion the thread stays up until the poster vouches for that raider (a button in the thread opens the
+  vouch form; any vouch in #vouch counts too), or `vouch_wait_days` pass. Then it's deleted (or archived).
+- Guild Master only: the Post a job form has a *Reward boost* pick (`points.job_xp_boosts`) for special posts.
+  Nobody else sees it. The board marks the post as a special job without showing any numbers.
 - Check-ins on day 3 and 10; confirmations that stall go to mods instead of expiring.
 
 **Mod tools** (slash commands, private replies, mod roles only)

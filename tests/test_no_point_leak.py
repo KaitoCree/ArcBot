@@ -118,10 +118,10 @@ async def test_player_flows_never_show_points(world):
     app, bot, gw, members = world
     replies: list[str] = []
 
-    async def act(uid, fn, *args, message=None):
+    async def act(uid, fn, *args, message=None, **kwargs):
         user = await app.member(uid)
         it = FakeInteraction(bot, user, message=message)
-        await fn(it, *args)
+        await fn(it, *args, **kwargs)
         replies.extend(it.replies)
         return it
 
@@ -154,16 +154,49 @@ async def test_player_flows_never_show_points(world):
     assert gw.reactions, "well-formed vouch got no reaction"
     assert app.engine.get_user(5)["rank_key"] == "scavenger"
 
-    # job cycle: post -> accept -> complete -> confirm
+    # job cycle: post -> several attempt (private thread) -> first marks complete -> poster confirms -> vouch
     jobs = bot.get_cog("Jobs")
     await act(2, jobs.submit, "Spaceport quest run", "Need a hand clearing the Spaceport quest chain tonight.",
-              "anyone", [])
+              "anyone", [], boost=2)  # not a Guild Master: the boost is ignored
     job = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
-    assert job["status"] == "open"
+    assert job["status"] == "open" and job["xp_multiplier"] == 1
     await act(3, jobs.on_accept, job["id"], message=FakeMessage(app.channel("job_board")))
-    await act(2, jobs.on_complete, job["id"])
-    await act(3, jobs.on_confirm, job["id"])
-    assert app.conn.execute("SELECT status, awarded_points FROM jobs WHERE id=?", (job["id"],)).fetchone()[0] == "completed"
+    await act(5, jobs.on_accept, job["id"], message=FakeMessage(app.channel("job_board")))
+    thread = gw.threads[-1]
+    assert jobs.service.get(job["id"])["thread_id"] == thread.id and sorted(thread.members) == [2, 3, 5]
+    it = await act(2, jobs.on_complete, job["id"])  # the poster confirms, never claims
+    assert any("can confirm it" in r for r in it.replies)
+    await act(5, jobs.on_complete, job["id"])
+    it = await act(3, jobs.on_complete, job["id"])  # 5 got there first
+    assert any("already marked this one done" in r for r in it.replies)
+    assert any("Pending completion" in t for t in gw.player_visible)
+    app.engine.place(9, "green_horn")
+    it = await act(9, jobs.on_accept, job["id"])  # heads-up before joining a job that may already be done
+    assert any("Heads up" in r for r in it.replies) and 9 not in jobs.service.attempters(job["id"])
+    await act(9, jobs.on_join, job["id"])
+    assert 9 in thread.members
+    it = await act(5, jobs.on_confirm, job["id"])
+    assert any("Only the raider who posted" in r for r in it.replies)
+    await act(2, jobs.on_confirm, job["id"])
+    done = jobs.service.get(job["id"])
+    assert done["status"] == "completed" and done["helper_id"] == 5
+    assert any(t is thread and "vouch" in text for t, text in gw.sent)
+    await jobs.housekeeping()
+    assert not thread.closed  # waits for the poster's vouch
+    await act(2, bot.get_cog("Vouch").guided_vouch, await app.member(5), "Cleared the whole Spaceport chain with me")
+    assert thread.closed and jobs.service.get(job["id"])["thread_closed_at"]
+    # Guild Master boost: only offered to the Guild Master, and only honoured for them
+    import arcbot.cogs.jobs as cj
+    assert cj.PostJobModal(app).boost_in is None
+    assert cj.PostJobModal(app, can_boost=True).boost_in is not None
+    real_gm = app.is_guild_master
+    app.is_guild_master = lambda m: m.id == 4  # type: ignore[method-assign]
+    await act(4, jobs.submit, "Guild night", "Big guild night run through Buried City, all welcome.", "anyone", [],
+              boost=2)
+    app.is_guild_master = real_gm  # type: ignore[method-assign]
+    special = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
+    assert special["xp_multiplier"] == app.cfg.job_xp_boosts[2].multiplier > 1
+    assert any("Special job" in t for t in gw.player_visible)
     # job held for mods, then rejected
     await act(1, jobs.submit, "Cheap carry", "paid carry service, dm me now for a price", "anyone", [])
 
@@ -186,8 +219,11 @@ async def test_player_flows_never_show_points(world):
               "anyone", [])
     soft = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
     assert soft["status"] == "open" and any("heads-up" in t for t in gw.mod_visible)
-    # helper starts completion, poster confirms; ineligible accept wording
+    # attempter marks done and the poster sends it back once, then confirms; ineligible accept wording
     await act(5, jobs.on_accept, soft["id"], message=FakeMessage(app.channel("job_board")))
+    await act(5, jobs.on_complete, soft["id"])
+    await act(3, jobs.on_notdone, soft["id"])
+    assert jobs.service.get(soft["id"])["status"] == "accepted"
     await act(5, jobs.on_complete, soft["id"])
     await act(3, jobs.on_confirm, soft["id"])
     assert jobs.service.get(soft["id"])["status"] == "completed"

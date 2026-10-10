@@ -54,7 +54,8 @@ def perms_from_pair(allow, deny) -> dict[str, bool]:
 
 
 BOT_PERMS = ["view_channel", "send_messages", "send_messages_in_threads", "embed_links", "attach_files",
-             "read_message_history", "add_reactions", "pin_messages", "create_public_threads"]
+             "read_message_history", "add_reactions", "pin_messages", "create_public_threads",
+             "create_private_threads", "manage_threads"]
 
 
 def role(name: str) -> Target:

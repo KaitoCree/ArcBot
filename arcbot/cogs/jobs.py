@@ -1,6 +1,8 @@
-"""#job-board: Post a job modal, listing checks, mod routing, accept/complete/confirm, flags, expiry."""
+"""#job-board: Post a job modal, listing checks, mod routing, attempt/complete/confirm, private threads, flags,
+expiry."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -14,6 +16,7 @@ from ..config import ROOT
 from ..intake import delete_image
 from ..jobs import JobService
 from ..panels import ensure_panel
+from .vouch import VouchModal
 
 if TYPE_CHECKING:
     from ..app import App
@@ -37,50 +40,61 @@ def _image_path(job_id: int) -> Path | None:
     return None
 
 
-def job_embed(app: "App", job, *, poster_name: str | None = None, helper_name: str | None = None) -> discord.Embed:
+def _mentions(ids) -> str:
+    return " ".join(f"<@{i}>" for i in ids)
+
+
+def job_embed(app: "App", job, attempters: list[int] | tuple = ()) -> discord.Embed:
     c = app.copy
     tier = app.cfg.job_tiers[job["tier"]]
-    e = discord.Embed(title=job["title"], description=job["description"], color=discord.Color.blurple())
+    special = float(job["xp_multiplier"] or 1) > 1
+    e = discord.Embed(title=job["title"], description=job["description"],
+                      color=discord.Color.gold() if special else discord.Color.blurple())
     e.add_field(name=c.t("jobs.posted_by"), value=f"<@{job['poster_id']}>", inline=True)
     e.add_field(name=c.t("jobs.open_to"), value=tier.label, inline=True)
     helper = f"<@{job['helper_id']}>" if job["helper_id"] else ""
-    other = ""
-    if job["status"] == "awaiting_confirm":
-        other_id = job["helper_id"] if job["completion_requested_by"] == job["poster_id"] else job["poster_id"]
-        other = f"<@{other_id}>"
     status = {
         "open": c.t("jobs.status_open"),
-        "accepted": c.t("jobs.status_taken", helper=helper),
-        "awaiting_confirm": c.t("jobs.status_awaiting", other=other),
+        "accepted": c.t("jobs.status_attempting"),
+        "awaiting_confirm": c.t("jobs.status_awaiting", helper=helper, poster=f"<@{job['poster_id']}>"),
         "needs_mod": c.t("jobs.status_needs_mod"),
-        "completed": c.t("jobs.status_done"),
+        "completed": c.t("jobs.status_done", helper=helper),
         "cancelled": c.t("jobs.status_cancelled"),
         "expired": c.t("jobs.status_expired"),
         "removed": c.t("jobs.status_removed"),
         "closed": c.t("jobs.status_closed"),
     }.get(job["status"], job["status"])
     e.add_field(name=c.t("jobs.status"), value=status, inline=True)
+    if special:
+        e.add_field(name=c.t("jobs.special"), value=c.t("jobs.special_value"), inline=True)
+    if attempters and job["status"] in JobService.JOINABLE:
+        e.add_field(name=c.t("jobs.attempting"), value=_mentions(attempters)[:1024], inline=False)
     e.set_footer(text=f"Job #{job['id']}")
     return e
 
 
 def job_view(app: "App", job) -> discord.ui.View | None:
     c = app.copy
+    attempt = ("accept", c.t("jobs.btn_accept"), discord.ButtonStyle.primary)
+    cancel = ("cancel", c.t("jobs.btn_cancel"), discord.ButtonStyle.secondary)
+    flag = ("flag", c.t("jobs.btn_flag"), discord.ButtonStyle.secondary)
     buttons = {
-        "open": [("accept", c.t("jobs.btn_accept"), discord.ButtonStyle.success),
-                 ("cancel", c.t("jobs.btn_cancel"), discord.ButtonStyle.secondary),
-                 ("flag", c.t("jobs.btn_flag"), discord.ButtonStyle.secondary)],
-        "accepted": [("complete", c.t("jobs.btn_complete"), discord.ButtonStyle.success),
-                     ("cancel", c.t("jobs.btn_cancel"), discord.ButtonStyle.secondary),
-                     ("flag", c.t("jobs.btn_flag"), discord.ButtonStyle.secondary)],
+        "open": [attempt, cancel, flag],
+        "accepted": [attempt, ("complete", c.t("jobs.btn_complete"), discord.ButtonStyle.success), cancel, flag],
+        # pending completion: the poster decides; others can still join after a heads-up
         "awaiting_confirm": [("confirm", c.t("jobs.btn_confirm"), discord.ButtonStyle.success),
-                             ("flag", c.t("jobs.btn_flag"), discord.ButtonStyle.secondary)],
+                             ("notdone", c.t("jobs.btn_notdone"), discord.ButtonStyle.danger),
+                             attempt, cancel, flag],
     }.get(job["status"])
     if not buttons:
         return None
-    v = discord.ui.View(timeout=None)
+    return _buttons(job["id"], buttons)
+
+
+def _buttons(job_id: int, buttons, timeout: float | None = None) -> discord.ui.View:
+    v = discord.ui.View(timeout=timeout)
     for action, label, style in buttons:
-        v.add_item(JobButton(action, job["id"], label=label, style=style))
+        v.add_item(JobButton(action, job_id, label=label, style=style))
     return v
 
 
@@ -89,7 +103,9 @@ def review_embed(app: "App", job, *, decided: str | None = None, heading: str = 
     e = discord.Embed(title=f"Job #{job['id']} {heading}: {job['title']}", description=job["description"],
                       color=discord.Color.orange() if decided is None else discord.Color.dark_grey())
     e.add_field(name="Poster", value=f"<@{job['poster_id']}>", inline=True)
-    e.add_field(name="Tier", value=f"{tier.label} (hidden reward {tier.points})", inline=True)  # mod-only
+    boost = float(job["xp_multiplier"] or 1)
+    boost_txt = f" x{boost:g} Guild Master boost" if boost > 1 else ""
+    e.add_field(name="Tier", value=f"{tier.label} (hidden reward {tier.points}{boost_txt})", inline=True)  # mod-only
     reasons = json.loads(job["flag_reasons"] or "[]")
     e.add_field(name="Why it's here", value="\n".join(f"• {r}" for r in reasons) or "flagged by a member",
                 inline=False)
@@ -109,7 +125,7 @@ def review_view(job_id: int, kind: str = "hold") -> discord.ui.View:
 
 # ===================================================================== modal
 class PostJobModal(discord.ui.Modal):
-    def __init__(self, app: "App"):
+    def __init__(self, app: "App", *, can_boost: bool = False):
         c = app.copy
         super().__init__(title=c.t("jobs.modal_title"), timeout=15 * 60)
         self.app = app
@@ -123,11 +139,19 @@ class PostJobModal(discord.ui.Modal):
         self.add_item(discord.ui.Label(text=c.t("jobs.description_label"), component=self.desc_in))
         self.add_item(discord.ui.Label(text=c.t("jobs.tier_label"), component=self.tier_in))
         self.add_item(discord.ui.Label(text=c.t("jobs.image_label"), component=self.image_in))
+        # Guild Master only: everyone else never gets this field, so it can't be picked
+        self.boost_in: discord.ui.Select | None = None
+        if can_boost and len(app.cfg.job_xp_boosts) > 1:
+            self.boost_in = discord.ui.Select(custom_id="boost", required=False, min_values=0, max_values=1, options=[
+                discord.SelectOption(label=b.label[:100], value=str(i), default=i == 0)
+                for i, b in enumerate(app.cfg.job_xp_boosts)])
+            self.add_item(discord.ui.Label(text=c.t("jobs.boost_label"), component=self.boost_in))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         cog: Jobs = interaction.client.get_cog("Jobs")  # type: ignore[assignment]
+        boost = int(self.boost_in.values[0]) if self.boost_in is not None and self.boost_in.values else 0
         await cog.submit(interaction, self.title_in.value.strip(), self.desc_in.value.strip(), self.tier_in.values[0],
-                         list(self.image_in.values))
+                         list(self.image_in.values), boost=boost)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         await _error(interaction, error)
@@ -149,11 +173,11 @@ class BoardPanel(discord.ui.View):
         if not app.engine.is_placed(interaction.user.id):
             await interaction.response.send_message(app.copy.t("jobs.not_placed"), ephemeral=True)
             return
-        await interaction.response.send_modal(PostJobModal(app))
+        await interaction.response.send_modal(PostJobModal(app, can_boost=app.is_guild_master(interaction.user)))
 
 
 class JobButton(discord.ui.DynamicItem[discord.ui.Button],
-                template=r"arcbot:job:(?P<action>accept|cancel|complete|confirm|flag):(?P<id>\d+)"):
+                template=r"arcbot:job:(?P<action>accept|join|cancel|complete|confirm|notdone|vouch|flag):(?P<id>\d+)"):
     def __init__(self, action: str, job_id: int, *, label: str = "…", style=discord.ButtonStyle.secondary):
         super().__init__(discord.ui.Button(label=label, style=style, custom_id=f"arcbot:job:{action}:{job_id}"))
         self.action, self.job_id = action, job_id
@@ -235,6 +259,7 @@ class Jobs(commands.Cog):
         self.service = JobService(self.app.conn, self.app.cfg, self.app.engine)
         self.panel = BoardPanel(self)
         bot.add_view(self.panel)
+        self._thread_locks: dict[int, asyncio.Lock] = {}
         JOB_UPLOADS.mkdir(parents=True, exist_ok=True)
 
     async def cog_load(self) -> None:
@@ -254,19 +279,24 @@ class Jobs(commands.Cog):
 
     # ----------------------------------------------------------- posting
     async def submit(self, interaction: discord.Interaction, title: str, desc: str, tier: str,
-                     images: list[discord.Attachment]) -> None:
+                     images: list[discord.Attachment], *, boost: int = 0) -> None:
         app = self.app
         c = app.copy
         await interaction.response.defer(ephemeral=True, thinking=True)
+        multiplier = 1.0
+        if boost and 0 <= boost < len(app.cfg.job_xp_boosts) and app.is_guild_master(interaction.user):
+            multiplier = app.cfg.job_xp_boosts[boost].multiplier
         image = images[0] if images else None
         if image and ((image.content_type or "").split(";")[0] not in ALLOWED_TYPES
                       or image.size > int(app.cfg.ocr.get("max_image_mb", 8)) * 1024 * 1024):
             image = None
-        job_id, status, reasons = self.service.create(interaction.user.id, title, desc, tier, has_image=image is not None)
+        job_id, status, reasons = self.service.create(interaction.user.id, title, desc, tier, has_image=image is not None,
+                                                      xp_multiplier=multiplier)
         if image is not None:
             ext = ALLOWED_TYPES[(image.content_type or "").split(";")[0]]
             (JOB_UPLOADS / f"job-{job_id}.{ext}").write_bytes(await image.read())
-        log.info("job %s by %s tier=%s status=%s reasons=%s", job_id, interaction.user.id, tier, status, reasons)
+        log.info("job %s by %s tier=%s boost=x%g status=%s reasons=%s", job_id, interaction.user.id, tier, multiplier,
+                 status, reasons)
         if status == "open":
             await self.publish(job_id)
             if reasons:  # soft flag-list words: posted, mods get a heads-up with a Take down button
@@ -319,7 +349,8 @@ class Jobs(commands.Cog):
         if ch is None:
             return
         try:
-            await app.gateway.edit(ch.get_partial_message(job["message_id"]), embed=job_embed(app, job),
+            await app.gateway.edit(ch.get_partial_message(job["message_id"]),
+                                   embed=job_embed(app, job, self.service.attempters(job["id"])),
                                    view=job_view(app, job), user_texts=[job["title"], job["description"]])
         except discord.HTTPException as exc:
             log.warning("could not refresh job %s: %s", job["id"], exc)
@@ -355,6 +386,7 @@ class Jobs(commands.Cog):
         await self._refresh(job)
         await self._close_review(interaction, job, f"Taken down by {interaction.user.mention}")
         await self._tell_poster(job["poster_id"], self.app.copy.t("jobs.rejected_generic"))
+        await self.close_threads()
 
     async def review_award(self, interaction: discord.Interaction, job_id: int) -> None:
         await self._resolve(interaction, job_id, award=True)
@@ -377,6 +409,9 @@ class Jobs(commands.Cog):
             await self._tell_poster(uid, app.copy.t("jobs.mod_resolved"))
         if result is not None and result.change is not None:
             await app.apply_change(result.change, await app.member(job["helper_id"]))
+        if award:
+            await self._after_completion(job)
+        await self.close_threads()
 
     async def review_tier(self, interaction: discord.Interaction, job_id: int) -> None:
         await interaction.response.send_message("Pick the tier:", ephemeral=True,
@@ -392,8 +427,84 @@ class Jobs(commands.Cog):
         if member is not None:
             await self.app.gateway.dm(member, text)
 
+    # ------------------------------------------------------------ threads
+    async def _thread(self, job) -> discord.Thread | None:
+        if not job["thread_id"]:
+            return None
+        thread = self.app.bot_channel(job["thread_id"])
+        if thread is None:
+            try:  # archived threads are not cached
+                thread = await self.bot.fetch_channel(job["thread_id"])
+            except discord.NotFound:
+                return None
+            except discord.DiscordException as exc:
+                log.warning("could not fetch thread %s: %s", job["thread_id"], exc)
+                return None
+        return thread  # type: ignore[return-value]
+
+    async def _say(self, job, text: str, ping: list[int], view: discord.ui.View | None = None) -> None:
+        """Post in the job's private thread, or on the board if there is none."""
+        target = await self._thread(job) or self.app.channel("job_board")
+        if target is not None:
+            await self.app.gateway.send(target, text, view=view,
+                                        allowed_mentions=discord.AllowedMentions(
+                                            users=[discord.Object(i) for i in ping if i]))
+
+    async def _join_thread(self, job, uid: int) -> None:
+        """Create the private thread on the first attempt; add every later attempter to it."""
+        app, c = self.app, self.app.copy
+        if not app.cfg.job_rules.get("create_thread_per_job"):
+            return
+        lock = self._thread_locks.setdefault(job["id"], asyncio.Lock())
+        async with lock:
+            job = self.service.get(job["id"])
+            thread = await self._thread(job)
+            if thread is not None:
+                await app.gateway.add_to_thread(thread, uid)
+                await app.gateway.send(thread, c.t("jobs.thread_joined", helper=f"<@{uid}>"))
+                return
+            ch = app.bot_channel(job["channel_id"]) or app.channel("job_board")
+            if ch is None:
+                return
+            thread = await app.gateway.create_private_thread(ch, job["title"])
+            if thread is None:
+                return
+            self.service.set_thread(job["id"], thread.id)
+            for member_id in (job["poster_id"], *self.service.attempters(job["id"])):
+                await app.gateway.add_to_thread(thread, member_id)
+            await app.gateway.send(
+                thread, c.t("jobs.thread_intro", poster=f"<@{job['poster_id']}>", helper=f"<@{uid}>"),
+                view=_buttons(job["id"], [("complete", c.t("jobs.btn_complete"), discord.ButtonStyle.success)]),
+                allowed_mentions=discord.AllowedMentions(users=True))
+
+    async def close_threads(self) -> None:
+        """Delete (or archive) threads of finished jobs. A completed job's thread waits for the poster's vouch."""
+        delete = bool(self.app.cfg.job_rules.get("delete_thread_when_done", True))
+        for job in self.service.threads_to_close():
+            thread = await self._thread(job)
+            if thread is not None and not await self.app.gateway.close_thread(thread, delete=delete):
+                continue  # try again next hour
+            log.info("job %s thread closed (status=%s, vouched=%s)", job["id"], job["status"], bool(job["vouched_at"]))
+            self.service.mark_thread_closed(job["id"])
+
+    async def on_vouched(self, voucher_id: int, recipients: list[int]) -> None:
+        """Called by the Vouch cog for every recorded vouch, counted or not."""
+        if self.service.note_vouch(voucher_id, recipients):
+            await self.close_threads()
+
+    async def _after_completion(self, job) -> None:
+        """Thank everyone in the thread and ask the poster to vouch; the thread closes after the vouch."""
+        c = self.app.copy
+        if not job["helper_id"]:
+            return
+        helper = await self.app.member(job["helper_id"])
+        name = helper.display_name if helper is not None else "the helper"
+        view = _buttons(job["id"], [("vouch", c.t("jobs.btn_vouch", name=name)[:80], discord.ButtonStyle.primary)])
+        await self._say(job, c.t("jobs.done_thread", helper=f"<@{job['helper_id']}>", poster=f"<@{job['poster_id']}>"),
+                        [job["poster_id"], job["helper_id"]], view=view)
+
     # ------------------------------------------------------------ job buttons
-    async def on_accept(self, interaction: discord.Interaction, job_id: int) -> None:
+    async def on_accept(self, interaction: discord.Interaction, job_id: int, *, pending_ok: bool = False) -> None:
         app, c = self.app, self.app.copy
         uid = interaction.user.id
         app.adopt_from_roles(interaction.user)
@@ -403,11 +514,19 @@ class Jobs(commands.Cog):
         if member is not None and member.joined_at is not None:
             days = (datetime.now(timezone.utc) - member.joined_at).total_seconds() / 86400
         job, reason = self.service.accept(job_id, uid, helper_rank=user["rank_key"] if user else None,
-                                          days_in_guild=days)
+                                          days_in_guild=days, pending_ok=pending_ok)
+        if reason == "pending":
+            # someone may already have finished it: let them decide whether it's worth their time
+            view = _buttons(job_id, [("join", c.t("jobs.btn_join"), discord.ButtonStyle.secondary)], timeout=5 * 60)
+            await interaction.response.send_message(
+                c.t("jobs.pending_warning", helper=f"<@{job['helper_id']}>"), view=view, ephemeral=True)
+            return
         if reason:
             msg = {
                 "taken": c.t("jobs.taken"),
                 "own": c.t("jobs.cannot_accept_own"),
+                "already": c.t("jobs.already_attempting"),
+                "full": c.t("jobs.full"),
                 "not_placed": c.t("jobs.not_placed"),
                 "too_new": c.t("jobs.too_new"),
                 "rank_too_low": c.t("jobs.ineligible", who=app.cfg.job_tiers[job["tier"]].who if job else ""),
@@ -418,13 +537,11 @@ class Jobs(commands.Cog):
         await interaction.response.send_message(
             c.t("jobs.accepted", poster=poster.display_name if poster else "the poster"), ephemeral=True)
         await self._refresh(job)
-        if app.cfg.job_rules.get("create_thread_per_job") and interaction.message is not None:
-            thread = await app.gateway.create_thread(interaction.message, job["title"])
-            if thread is not None:
-                self.service.set_thread(job_id, thread.id)
-                await app.gateway.send(
-                    thread, c.t("jobs.thread_intro", poster=f"<@{job['poster_id']}>", helper=f"<@{uid}>"),
-                    allowed_mentions=discord.AllowedMentions(users=True))
+        await self._join_thread(job, uid)
+
+    async def on_join(self, interaction: discord.Interaction, job_id: int) -> None:
+        """"Attempt anyway" after the pending-completion heads-up."""
+        await self.on_accept(interaction, job_id, pending_ok=True)
 
     async def on_cancel(self, interaction: discord.Interaction, job_id: int) -> None:
         job = self.service.cancel(job_id, interaction.user.id)
@@ -433,57 +550,82 @@ class Jobs(commands.Cog):
             return
         await interaction.response.send_message(self.app.copy.t("jobs.cancelled_note"), ephemeral=True)
         await self._refresh(job)
+        await self.close_threads()
 
     async def on_complete(self, interaction: discord.Interaction, job_id: int) -> None:
         c = self.app.copy
-        job = self.service.mark_complete(job_id, interaction.user.id)
+        uid = interaction.user.id
+        job = self.service.mark_complete(job_id, uid)
         if job is None:
-            await interaction.response.send_message(c.t("jobs.not_involved"), ephemeral=True)
+            job = self.service.get(job_id)
+            if job is not None and job["status"] == "awaiting_confirm":
+                msg = c.t("jobs.already_claimed", helper=f"<@{job['helper_id']}>")
+            elif job is not None and job["poster_id"] == uid:
+                msg = c.t("jobs.poster_waits")
+            elif job is not None and job["status"] in JobService.JOINABLE:
+                msg = c.t("jobs.not_attempting")
+            else:
+                msg = c.t("jobs.taken")
+            await interaction.response.send_message(msg, ephemeral=True)
             return
+        log.info("job %s marked complete by %s", job_id, uid)
         await interaction.response.send_message(c.t("jobs.marked_complete"), ephemeral=True)
         await self._refresh(job)
-        requester = interaction.user.id
-        other = job["helper_id"] if requester == job["poster_id"] else job["poster_id"]
-        target = self.app.bot_channel(job["thread_id"]) if job["thread_id"] else self.app.channel("job_board")
-        if target is not None:
-            await self.app.gateway.send(
-                target, c.t("jobs.awaiting_confirm", other=f"<@{other}>", requester=f"<@{requester}>"),
-                allowed_mentions=discord.AllowedMentions(users=[discord.Object(other)]))
+        await self._say(job, c.t("jobs.awaiting_confirm", poster=f"<@{job['poster_id']}>", requester=f"<@{uid}>"),
+                        [job["poster_id"]], view=_buttons(job_id, [
+                            ("confirm", c.t("jobs.btn_confirm"), discord.ButtonStyle.success),
+                            ("notdone", c.t("jobs.btn_notdone"), discord.ButtonStyle.danger)]))
 
     async def on_confirm(self, interaction: discord.Interaction, job_id: int) -> None:
         app, c = self.app, self.app.copy
         job, award = self.service.confirm(job_id, interaction.user.id)
         if award is None:
             waiting = job is not None and job["status"] == "awaiting_confirm"
-            if waiting and interaction.user.id == job["completion_requested_by"]:
-                msg = c.t("jobs.only_other")
-            elif waiting:
-                msg = c.t("jobs.not_involved")
-            else:
-                msg = c.t("jobs.taken")
+            msg = c.t("jobs.only_poster") if waiting else c.t("jobs.taken")
             await interaction.response.send_message(msg, ephemeral=True)
             return
-        log.info("job %s confirmed by %s: helper awarded %s (cap %s)", job_id, interaction.user.id, award.points,
-                 award.capped)
-        await interaction.response.send_message(c.t("jobs.completed"), ephemeral=True)
+        log.info("job %s confirmed: helper %s awarded %s (cap %s)", job_id, job["helper_id"], award.points, award.capped)
+        await interaction.response.send_message(c.t("jobs.completed", helper=f"<@{job['helper_id']}>"),
+                                                ephemeral=True)
         await self._refresh(job)
         if award.change is not None:
             await app.apply_change(award.change, await app.member(job["helper_id"]))
+        await self._after_completion(job)
 
-    async def on_flag(self, interaction: discord.Interaction, job_id: int) -> None:
-        app, c = self.app, self.app.copy
-        if not self.service.flag(job_id, interaction.user.id):
-            await interaction.response.send_message(c.t("jobs.not_yours"), ephemeral=True)
+    async def on_notdone(self, interaction: discord.Interaction, job_id: int) -> None:
+        c = self.app.copy
+        job, claimer = self.service.reject_completion(job_id, interaction.user.id)
+        if job is None:
+            current = self.service.get(job_id)
+            waiting = current is not None and current["status"] == "awaiting_confirm"
+            await interaction.response.send_message(c.t("jobs.only_poster") if waiting else c.t("jobs.taken"),
+                                                    ephemeral=True)
             return
-        await interaction.response.send_message(c.t("jobs.flagged"), ephemeral=True)
-        ch = app.channel("mod_review")
+        log.info("job %s: poster sent %s's completion back", job_id, claimer)
+        await interaction.response.send_message(c.t("jobs.sent_back"), ephemeral=True)
+        await self._refresh(job)
+        await self._say(job, c.t("jobs.not_done_yet", helper=f"<@{claimer}>", poster=f"<@{job['poster_id']}>"),
+                        [claimer])
+
+    async def on_vouch(self, interaction: discord.Interaction, job_id: int) -> None:
+        """The poster's "Vouch for <helper>" button after completion: opens the usual vouch form."""
+        app, c = self.app, self.app.copy
         job = self.service.get(job_id)
-        if ch is not None and job is not None:
-            link = ""
-            if job["message_id"]:
-                link = f" https://discord.com/channels/{ch.guild.id}/{job['channel_id']}/{job['message_id']}"
-            await app.gateway.send(ch, f"🚩 Job #{job_id} \"{job['title']}\" was flagged by {interaction.user.mention}."
-                                       f"{link}", mod_only=True)
+        if job is None or job["status"] != "completed" or not job["helper_id"]:
+            await interaction.response.send_message(c.t("jobs.taken"), ephemeral=True)
+            return
+        if interaction.user.id != job["poster_id"]:
+            await interaction.response.send_message(c.t("jobs.vouch_only_poster"), ephemeral=True)
+            return
+        if job["vouched_at"]:
+            await interaction.response.send_message(c.t("jobs.already_vouched"), ephemeral=True)
+            return
+        helper = await app.member(job["helper_id"])
+        vouch = self.bot.get_cog("Vouch")
+        if helper is None or vouch is None:
+            await interaction.response.send_message(c.t("errors.generic"), ephemeral=True)
+            return
+        await interaction.response.send_modal(VouchModal(vouch, helper))  # type: ignore[arg-type]
 
     # ------------------------------------------------------------ nudges / expiry
     @tasks.loop(hours=1)
@@ -491,14 +633,11 @@ class Jobs(commands.Cog):
         await self.housekeeping()
 
     async def housekeeping(self) -> None:
-        app, c = self.app, self.app.copy
+        c = self.app.copy
         for job in self.service.due_checkins():
-            target = app.bot_channel(job["thread_id"]) if job["thread_id"] else app.channel("job_board")
-            if target is not None:
-                ids = [job["poster_id"], job["helper_id"]]
-                await app.gateway.send(
-                    target, c.t("jobs.checkin", poster=f"<@{ids[0]}>", helper=f"<@{ids[1]}>"),
-                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(i) for i in ids]))
+            helpers = self.service.attempters(job["id"])
+            await self._say(job, c.t("jobs.checkin", poster=f"<@{job['poster_id']}>", helpers=_mentions(helpers)),
+                            [job["poster_id"], *helpers])
         for job in self.service.due_escalations():
             log.info("job %s confirmation stalled; sent to mods", job["id"])
             await self._refresh(job)
@@ -506,6 +645,7 @@ class Jobs(commands.Cog):
         for job in self.service.expire_due():
             log.info("job %s expired", job["id"])
             await self._refresh(job)
+        await self.close_threads()
 
     @expiry.before_loop
     async def _wait(self) -> None:

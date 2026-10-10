@@ -113,17 +113,29 @@ points:
     vanguard_plus:   {label: "Vanguard+",     who: "Vanguards and up",   min_rank: vanguard,   points: 15, mod_preview_before_posting: false}
     veterans_only:   {label: "Veterans only", who: "Veterans only",      min_rank: veteran,    points: 20, mod_preview_before_posting: true}
 
+  # Guild Master only: the Post a job form shows a "Reward boost" pick that multiplies the tier's hidden
+  # reward for a special post. Everyone else never sees it. The first entry is the default (no boost).
+  # The boost's extra is not trimmed by the helper's daily cap (the pair cap still applies).
+  job_xp_boosts:
+    - {label: "Standard reward", multiplier: 1}
+    - {label: "Boosted (x1.5)",  multiplier: 1.5}
+    - {label: "Double (x2)",     multiplier: 2}
+    - {label: "Triple (x3)",     multiplier: 3}
+
   job_rules:
     helper_min_days_in_guild: 3
+    max_attempters_per_job: 8        # raiders who can tap "I'm attempting" on one job (all join its private thread)
     pair_cap_per_30_days: 3          # (poster, helper) completions that earn points; extras complete silently at 0
     helper_daily_job_point_cap: 40
     open_job_expires_days: 7
-    accepted_job_expires_days: 14     # accepted but nobody pressed "Mark complete"
+    accepted_job_expires_days: 14     # someone is attempting but nobody pressed "Mark complete"
     checkin_after_days: [3, 10]       # "did this get done?" nudges in the job thread
-    confirm_wait_days: 7              # one side said done, other silent -> goes to mods instead of expiring
+    confirm_wait_days: 7              # an attempter said done, poster silent -> goes to mods instead of expiring
+    vouch_wait_days: 3                # after completion the thread stays up until the poster vouches, or this long
     max_open_jobs_per_poster: 3
     max_posts_per_poster_per_day: 3
-    create_thread_per_job: true
+    create_thread_per_job: true       # a private thread: poster + everyone attempting
+    delete_thread_when_done: true     # false = archive and lock it instead
 
 job_listing_checks:
   flag_list_file: "config/flag_list.json"
