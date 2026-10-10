@@ -122,11 +122,14 @@ points:
     - {label: "Double (x2)",     multiplier: 2}
     - {label: "Triple (x3)",     multiplier: 3}
 
-  # Guild Master only: the Reward boost pick also offers "Squad job". On a squad job the raider attempting taps
-  # "Add squad members"; when the poster confirms them, every squad member gets the full reward too (caps apply
-  # per raider). max_size counts the raider who adds the squad.
-  job_squads:
-    max_size: 3
+  # Guild Master only: the Reward boost pick also offers "Challenge". A challenge stays open until the Guild Master
+  # closes it. Raiders form squads (invitees must accept), each member uploads their post-raid summary screenshot,
+  # and the Guild Master approves the clear. Every approved squad member gets the tier reward (x boost) once per
+  # challenge; the first approved squad also gets first_clear_bonus (a share of the reward). Job caps don't apply.
+  job_challenges:
+    max_squad_size: 3
+    proof_window_minutes: 30      # screenshots further apart than this get flagged for the reviewer
+    first_clear_bonus: 0.5
 
   job_rules:
     helper_min_days_in_guild: 3

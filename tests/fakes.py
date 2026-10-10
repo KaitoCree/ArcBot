@@ -28,6 +28,14 @@ class FakeMessage:
         return None
 
 
+class FakeAttachment:
+    def __init__(self, data: bytes, content_type: str = "image/png"):
+        self.data, self.content_type, self.size = data, content_type, len(data)
+
+    async def read(self) -> bytes:
+        return self.data
+
+
 class FakeChannel:
     def __init__(self, name: str, guild=None):
         self.id = next(_ids)

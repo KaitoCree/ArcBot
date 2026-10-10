@@ -46,9 +46,13 @@ itself: restarts on crash, nightly backups, self-checks on startup.
   gets the credit. Only that raider earns points (with caps).
 - After completion the thread stays up until the poster vouches for that raider (a button in the thread opens the
   vouch form; any vouch in #vouch counts too), or `vouch_wait_days` pass. Then it's deleted (or archived).
-- Guild Master only: the posting form's special pick can make a *Squad job*. A raider attempting it taps
-  *Add squad members* (up to 2 more, `points.job_squads.max_size`); when the poster confirms that raider, the
-  whole squad gets the full reward automatically (caps apply per raider).
+- Guild Master only: the posting form's special pick can post a *Challenge* (`points.job_challenges`). It stays
+  open until the Guild Master closes it. Anyone eligible (the Guild Master too) taps *Form squad* and invites up
+  to 2 teammates, who must accept. After the raid every member uploads their post-raid summary screenshot; the
+  first upload locks the squad. The Guild Master gets all screenshots in #mod-review with automatic flags (uploads
+  far apart, duplicate files, members already rewarded) and approves or rejects. Every approved squad member gets
+  the same reward, the first approved squad gets a first-clear bonus, and each raider is rewarded once per
+  challenge. Approved squads are listed in the post's *Hall of Clears*.
 - Guild Master only: the Post a job form has a *Reward boost* pick (`points.job_xp_boosts`) for special posts.
   Nobody else sees it. The board marks the post as a special job without showing any numbers.
 - Check-ins on day 3 and 10; confirmations that stall go to mods instead of expiring.

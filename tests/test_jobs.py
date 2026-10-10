@@ -358,70 +358,13 @@ def test_cancel_only_by_poster(svc):
     assert svc.cancel(job_id, 1)["status"] == "cancelled"
 
 
-def _squad_job(svc, engine, tier="vanguard_plus", poster=4, squad=True):
-    for uid in (5, 6, 7):
-        engine.place(uid, "vanguard")
-    job_id, status, _ = svc.create(poster, "Squad run", GOOD + " squad", tier, has_image=False, squad=squad)
-    if status != "open":
-        svc.approve(job_id)
-    for uid in (2, 3):
-        svc.accept(job_id, uid, helper_rank="vanguard", days_in_guild=10)
-    return job_id
-
-
-V = ("vanguard", 10.0)
-
-
-def test_squad_is_rewarded_automatically(svc, engine):
-    job_id = _squad_job(svc, engine)
-    squad, skipped, block = svc.set_squad(job_id, 2, {5: V, 6: V})
-    assert block is None and squad == [5, 6] and skipped == {}
-    before = {u: engine.get_user(u)["points"] for u in (2, 5, 6, 3)}
-    svc.mark_complete(job_id, 2)
-    row, awards = svc.confirm_many(job_id, 4)
-    assert [(u, a.points) for u, a in awards] == [(2, 15), (5, 15), (6, 15)]  # everyone gets the full reward
-    assert row["status"] == "completed" and row["helper_id"] == 2 and row["reward_mode"] == "squad"
-    assert all(engine.get_user(u)["points"] == before[u] + 15 for u in (2, 5, 6))
-    assert engine.get_user(3)["points"] == before[3]
-    assert svc.winners(job_id) == [2, 5, 6]
-    assert [r["id"] for r in svc.note_vouch(4, [6])] == [job_id]  # vouching any rewarded raider frees the thread
-
-
-def test_only_the_confirmed_squad_is_rewarded(svc, engine):
-    job_id = _squad_job(svc, engine)
-    svc.set_squad(job_id, 2, {5: V})
-    svc.set_squad(job_id, 3, {6: V, 7: V})
-    svc.mark_complete(job_id, 2)
-    svc.mark_complete(job_id, 3)
-    svc.reject_completion(job_id, 4, 2)  # 2's squad hadn't really finished
-    row, awards = svc.confirm_many(job_id, 4)
-    assert [u for u, _ in awards] == [3, 6, 7]
-
-
-def test_squad_rules(svc, engine):
-    job_id = _squad_job(svc, engine)
-    assert svc.set_squad(job_id, 9, {5: V})[2] == "not_attempting"
-    squad, skipped, _ = svc.set_squad(job_id, 2, {4: V, 2: V, 3: V, 5: ("green_horn", 10.0), 6: ("vanguard", 1.0),
-                                                  7: (None, 10.0)})
-    assert squad == [3] and skipped == {4: "own", 2: "own", 5: "rank_too_low", 6: "too_new", 7: "not_placed"}
-    assert svc.set_squad(job_id, 3, {5: V})[2] == "in_squad"  # 3 is in 2's squad
-    squad, skipped, _ = svc.set_squad(job_id, 2, {3: V, 5: V, 6: V})  # max_size 3 = leader + 2
-    assert squad == [3, 5] and skipped == {6: "full"}
-    assert svc.set_squad(job_id, 2, {})[0] == [] and svc.squad_of(job_id, 2) == []  # cleared
-    svc.set_squad(job_id, 2, {5: V})
-    svc.mark_complete(job_id, 2)
-    assert svc.set_squad(job_id, 2, {6: V})[2] == "locked"  # locked once marked complete
-    plain = _squad_job(svc, engine, squad=False)
-    assert svc.set_squad(plain, 2, {5: V})[2] == "not_squad"
-
-
-def test_squad_rewards_respect_caps(svc, engine, conn):
-    for p in (20, 21):
-        engine.place(p, "scavenger")
-    for p in (20, 21):
-        _complete(svc, p, 5, tier="vanguard_plus", title=f"from {p}")  # 5 has 30 of the 40 daily
-    job_id = _squad_job(svc, engine)
-    svc.set_squad(job_id, 2, {5: V, 6: V})
-    svc.mark_complete(job_id, 2)
-    _, awards = svc.confirm_many(job_id, 4)
-    assert dict((u, a.points) for u, a in awards) == {2: 15, 5: 10, 6: 15}
+def test_challenges_never_expire_and_dont_count_as_open_jobs(svc, conn):
+    old = utcnow() - timedelta(days=90)
+    for i in range(3):
+        job_id, status, _ = svc.create(4, f"Challenge {i}", GOOD + f" {i}", "anyone", has_image=False,
+                                       kind="challenge", now=old)
+        assert status == "open"
+    assert svc.expire_due() == []  # open for 90 days and still up
+    _, status, reasons = svc.create(4, "Regular job", GOOD + " regular", "anyone", has_image=False)
+    assert status == "open", reasons  # three open challenges don't use up the poster's open-job cap
+    assert svc.accept_block_reason(svc.get(job_id), 2, helper_rank="vanguard", days_in_guild=10) == "challenge"

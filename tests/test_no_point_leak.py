@@ -17,7 +17,7 @@ from arcbot.bot import ArcBot
 from arcbot.db import connect
 from arcbot.discord_io import PointLeakError, leaks_points
 from arcbot.scoring import Stats, parse_hours
-from tests.fakes import FakeChannel, FakeGuild, FakeInteraction, FakeMember, FakeMessage, RecordingGateway
+from tests.fakes import FakeAttachment, FakeChannel, FakeGuild, FakeInteraction, FakeMember, FakeMessage, RecordingGateway
 
 ROOT = Path(__file__).resolve().parent.parent
 POINTISH = re.compile(r"\bpoints?\b|\bpts\b|\bscore\b", re.IGNORECASE)
@@ -98,6 +98,9 @@ async def world(cfg, copy, monkeypatch, tmp_path):
 
     monkeypatch.setattr(iu, "UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(cj, "JOB_UPLOADS", tmp_path)
+    import arcbot.cogs.challenges as cc
+
+    monkeypatch.setattr(cc, "JOB_UPLOADS", tmp_path)
     bot = ArcBot(app)
     await bot.setup_hook()
     yield app, bot, gw, members
@@ -197,7 +200,7 @@ async def test_player_flows_never_show_points(world):
     # Guild Master boost: only offered to the Guild Master, and only honoured for them
     import arcbot.cogs.jobs as cj
     assert cj.PostJobModal(app).special_in is None
-    assert any(o.label.startswith("Squad job") for o in cj.PostJobModal(app, can_boost=True).special_in.options)
+    assert any(o.label.startswith("Challenge") for o in cj.PostJobModal(app, can_boost=True).special_in.options)
     real_gm = app.is_guild_master
     app.is_guild_master = lambda m: m.id == 4  # type: ignore[method-assign]
     await act(4, jobs.submit, "Guild night", "Big guild night run through Buried City, all welcome.", "anyone", [],
@@ -206,30 +209,37 @@ async def test_player_flows_never_show_points(world):
     special = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
     assert special["xp_multiplier"] == app.cfg.job_xp_boosts[2].multiplier > 1
     assert any("Special job" in t for t in gw.player_visible)
-    # Guild Master squad job: the raider attempting adds their squad; confirming them rewards everyone
+    # Guild Master challenge: squads form, invite, upload post-raid screenshots, Guild Master approves
+    ch = bot.get_cog("Challenges")
+    if not app.engine.is_placed(4):
+        app.engine.place(4, "pathfinder")
     app.is_guild_master = lambda m: m.id == 4  # type: ignore[method-assign]
-    await act(4, jobs.submit, "Squad night", "Full squad run through the Spaceport, bring your crew along.",
-              "anyone", [], squad=True)
+    await act(4, jobs.submit, "Emperor extract", "Clear the frigate and extract with the Emperor core, full squad.",
+              "anyone", [], challenge=True)
+    chal = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
+    assert chal["kind"] == "challenge" and any("Hall of Clears" in t for t in gw.player_visible)
+    it = await act(3, jobs.on_accept, chal["id"])
+    assert any("Form squad" in r for r in it.replies)
+    await act(3, ch.on_form, chal["id"])
+    sid = ch.service.active_squad_of(chal["id"], 3)["id"]
+    sq_thread = app.bot_channel(ch.service.squad(sid)["thread_id"])
+    await act(3, ch.send_invites, sid, [await app.member(5), await app.member(4), await app.member(3)])
+    assert sorted(ch.service.invited(sid)) == [4, 5] and {3, 4, 5} <= set(sq_thread.members)
+    await act(5, ch.squad_accept, sid)
+    await act(4, ch.squad_accept, sid)  # the Guild Master can squad up too
+    it = await act(9, ch.squad_submit, sid)
+    assert any("Only raiders in this squad" in r for r in it.replies)
+    for uid in (3, 5, 4):
+        await act(uid, ch.save_proof, sid, [FakeAttachment(f"summary {uid}".encode())])
+    assert ch.service.squad(sid)["status"] == "in_review"
+    assert any("Challenge clear to review" in t for t in gw.mod_visible)
+    before = {u: app.engine.get_user(u)["points"] for u in (3, 4, 5)}
+    await ch.decide(FakeInteraction(bot, await app.member(4), message=FakeMessage()), sid, approve=True)
     app.is_guild_master = real_gm  # type: ignore[method-assign]
-    sq = app.conn.execute("SELECT * FROM jobs ORDER BY id DESC").fetchone()
-    assert sq["squad"] == 1 and any("Squad job" in t for t in gw.player_visible)
-    it = await act(3, jobs.on_squad, sq["id"])
-    assert any("I'm attempting" in r for r in it.replies)  # attempt first
-    await act(3, jobs.on_accept, sq["id"])
-    await act(3, jobs.on_squad, sq["id"])
-    await act(3, jobs.save_squad, sq["id"], [await app.member(5), await app.member(9), await app.member(4)])
-    assert jobs.service.squad_of(sq["id"], 3) == [5, 9]  # the poster can't join
-    sq_thread = app.bot_channel(jobs.service.get(sq["id"])["thread_id"])
-    assert {3, 5, 9} <= set(sq_thread.members)
-    await act(3, jobs.on_complete, sq["id"])
-    it = await act(4, jobs.on_review, sq["id"])
-    assert "<@3> + <@5> <@9>" in it.replies[-1]
-    before = {u: app.engine.get_user(u)["points"] for u in (3, 5, 9)}
-    await act(4, jobs.confirm_completion, sq["id"], None)
-    assert jobs.service.winners(sq["id"]) == [3, 5, 9]
-    assert all(app.engine.get_user(u)["points"] > before[u] for u in (3, 5, 9))
-    await act(4, bot.get_cog("Vouch").guided_vouch, await app.member(9), "Great squad run through the Spaceport")
-    assert sq_thread.closed  # vouching for any rewarded raider closes the thread
+    assert all(app.engine.get_user(u)["points"] > before[u] for u in (3, 4, 5))
+    assert len({app.engine.get_user(u)["points"] - before[u] for u in (3, 4, 5)}) == 1  # everyone equal
+    assert any("FIRST CLEAR" in t for t in gw.player_visible) and sq_thread.closed
+    assert any("First clear: <@3> <@5> <@4>" in t for t in gw.player_visible)
     # job held for mods, then rejected
     await act(1, jobs.submit, "Cheap carry", "paid carry service, dm me now for a price", "anyone", [])
 
